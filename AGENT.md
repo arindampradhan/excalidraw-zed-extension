@@ -33,14 +33,25 @@ excalidraw-zed-extension/
 │   ├── Cargo.toml
 │   ├── src/
 │   │   ├── main.rs            ← CLI entry, arg parsing, orchestration
-│   │   ├── server.rs          ← HTTP server (axum/tiny-http) + SSE
+│   │   ├── server.rs          ← HTTP server (axum) + SSE
 │   │   ├── watcher.rs         ← file watcher (notify crate)
 │   │   ├── webview.rs         ← wry WebView window lifecycle
-│   │   └── assets.rs          ← embed & serve static assets
-│   └── assets/
-│       ├── index.html         ← viewer shell
-│       ├── excalidraw.min.js  ← bundled Excalidraw renderer
-│       └── loader.js          ← SSE listener + re-render glue
+│   │   └── assets.rs          ← embed & serve static assets via include_bytes!
+│   ├── webview-src/           ← React + Vite source (npm project)
+│   │   ├── package.json       ← @excalidraw/excalidraw ^0.18, react ^18, vite
+│   │   ├── vite.config.ts     ← outDir: "../assets", base: "/assets/"
+│   │   ├── index.html
+│   │   └── src/
+│   │       ├── main.tsx       ← fetch /data → loadFromBlob → <Excalidraw>, SSE reload
+│   │       ├── App.tsx        ← <Excalidraw> component wrapper (view-only)
+│   │       └── styles.css
+│   └── assets/                ← Vite build output (embedded in binary at compile time)
+│       ├── index.html         ← served at GET /
+│       ├── main.js            ← compiled React + Excalidraw bundle
+│       └── *.woff2, *.wasm    ← Excalidraw runtime assets (served at GET /assets/*)
+│
+├── refs/
+│   └── excalidraw-vscode/     ← git submodule: reference implementation
 │
 └── Cargo.toml                 ← workspace root
 ```

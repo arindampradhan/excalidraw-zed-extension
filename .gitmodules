@@ -1,0 +1,3 @@
+[submodule "refs/excalidraw-vscode"]
+	path = refs/excalidraw-vscode
+	url = https://github.com/excalidraw/excalidraw-vscode

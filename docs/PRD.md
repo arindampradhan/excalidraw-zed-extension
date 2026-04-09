@@ -106,21 +106,119 @@ Responsibilities:
 
 * Start HTTP server
 * Serve:
-  * Static Excalidraw viewer bundle
-  * Current file JSON via `/data`
-* Watch file with notify/fs events
-* Push reload event via WebSocket or SSE
+  * `GET /` → `index.html` (React app shell)
+  * `GET /data` → current `.excalidraw` file JSON
+  * `GET /events` → SSE stream (`data: reload\n\n` on file change)
+  * `GET /assets/*` → compiled React/Excalidraw JS bundle **and** Excalidraw's own runtime assets (fonts, wasm) referenced via `window.EXCALIDRAW_ASSET_PATH = "/assets/"`. Both are embedded at compile time via `include_bytes!` in `assets.rs`.
+* Watch file with `notify` crate (80 ms debounce)
+* Push `reload` event via SSE broadcast channel
 * Launch WebView window using `wry`
 
 ---
 
-### C) Web UI (served locally)
+### C) Web UI — Runtime Behaviour
 
-* Minimal HTML shell
-* Loads Excalidraw renderer
-* Fetches `/data`
-* Listens for reload events
-* Re-renders scene
+A single-page React app (built with Vite, served by the companion binary).
+
+**`index.html`**
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Excalidraw Preview</title>
+  <style>body,html{margin:0;height:100%} #root{height:100%}</style>
+</head>
+<body>
+  <div id="root"></div>
+  <div id="error" style="display:none;position:absolute;top:0;left:0;width:100%;padding:1em;background:#fee;color:#c00;font-family:monospace;white-space:pre;z-index:9999"></div>
+  <script>
+    window.EXCALIDRAW_ASSET_PATH = "/assets/";
+    window.EXCALIDRAW_EXPORT_SOURCE = "excalidraw-zed-preview";
+  </script>
+  <script type="module" src="/assets/main.js"></script>
+</body>
+</html>
+```
+
+**`main.tsx` — startup sequence**
+
+1. `fetch('/data')` → raw `.excalidraw` JSON bytes
+2. `loadFromBlob(new Blob([bytes], { type: "application/json" }), null, null)` → `initialData`
+   (uses `loadFromBlob` from `@excalidraw/excalidraw` — same approach as `excalidraw-vscode`, see `refs/excalidraw-vscode/webview/src/main.tsx`)
+3. Render:
+   ```tsx
+   <Excalidraw
+     initialData={{ ...initialData, scrollToContent: true }}
+     viewModeEnabled={true}
+     theme="auto"
+     excalidrawAPI={(api) => setApi(api)}
+   />
+   ```
+4. Open `new EventSource('/events')`
+5. On `message` event with `data === 'reload'`:
+   - Re-fetch `/data`
+   - `loadFromBlob(...)` → `newData`
+   - `api.updateScene(newData)` — debounced 150 ms to avoid double-fire
+6. On any parse/fetch error → populate and show `#error` overlay
+
+**Key npm dependencies**
+
+| Package | Version | Purpose |
+|---|---|---|
+| `@excalidraw/excalidraw` | `^0.18.0` | Diagram renderer component |
+| `react` / `react-dom` | `^18` | UI framework |
+
+---
+
+### D) Web UI — Build Pipeline
+
+Source lives in `preview-binary/webview-src/` (adapted from `refs/excalidraw-vscode/webview/`).
+
+```
+preview-binary/
+  webview-src/
+    package.json        ← @excalidraw/excalidraw, react, vite
+    vite.config.ts      ← outDir: "../assets", base: "/assets/"
+    index.html
+    src/
+      main.tsx
+      App.tsx
+      styles.css
+  assets/               ← Vite build output (committed or built in CI)
+    index.html          ← served at GET /
+    main.js             ← compiled React + Excalidraw bundle
+    *.woff2, *.wasm     ← Excalidraw's own font/wasm assets
+```
+
+**Build command:**
+```bash
+cd preview-binary/webview-src && npm install && npm run build
+```
+
+**`vite.config.ts`:**
+```ts
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+export default defineConfig({
+  plugins: [react()],
+  base: '/assets/',
+  build: {
+    outDir: '../assets',
+    emptyOutDir: true,
+    rollupOptions: {
+      input: 'index.html',
+    },
+  },
+});
+```
+
+**Embedding in Rust (`assets.rs`):**
+
+`include_bytes!` embeds the entire `assets/` directory at compile time. `assets.rs` serves:
+- Our compiled React bundle (`main.js`, `index.html`, CSS)
+- Excalidraw's own runtime assets (fonts `.woff2`, Wasm) which the `@excalidraw/excalidraw` package fetches dynamically at `window.EXCALIDRAW_ASSET_PATH` (`/assets/`)
 
 ---
 
@@ -129,13 +227,19 @@ Responsibilities:
 ```
 save file in Zed
       ↓
-file watcher triggers
+file watcher triggers (notify crate, 80 ms debounce)
       ↓
-server notifies webview (ws/sse)
+broadcast channel → SSE handler sends "data: reload\n\n"
       ↓
-webview refetches /data
+EventSource('/events') fires in webview JS
       ↓
-canvas re-renders
+fetch('/data') → raw .excalidraw JSON bytes
+      ↓
+loadFromBlob(new Blob([bytes], { type: "application/json" }))
+      ↓
+excalidrawAPI.updateScene(newData)   ← 150 ms debounce
+      ↓
+<Excalidraw> component re-renders canvas
 ```
 
 ---
