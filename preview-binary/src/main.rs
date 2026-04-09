@@ -664,6 +664,7 @@ mod tests {
         let (focus_tx, _) = watch::channel(false);
         Arc::new(AppState {
             file_path: file.to_path_buf(),
+            lock_path: std::env::temp_dir().join("excalidraw-test.lock"),
             content_type: content_type.to_string(),
             file_name: file
                 .file_stem()

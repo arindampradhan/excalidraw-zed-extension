@@ -1,5 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Excalidraw, serializeAsJSON } from "@excalidraw/excalidraw";
+import {
+  Excalidraw,
+  serializeAsJSON,
+  exportToSvg,
+  exportToBlob,
+  hashElementsVersion,
+} from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 
 interface AppProps {
@@ -43,10 +49,21 @@ export default function App({
   onSaved,
 }: AppProps) {
   const resolvedTheme = useOsTheme(theme as "auto" | "light" | "dark");
-  // Only JSON files support round-trip editing; SVG/PNG are view-only.
-  const editable = contentType === "application/json";
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Track the element hash of the last-saved state so we only POST when
+  // elements actually change (not on viewport pan / zoom / selection).
+  const prevVersionRef = useRef<number>(-1);
+
+  // Seed prevVersionRef from the initial scene so the first onChange
+  // (which Excalidraw fires immediately on mount) doesn't trigger a spurious save.
+  useEffect(() => {
+    if (initialData?.elements) {
+      prevVersionRef.current = hashElementsVersion(
+        initialData.elements as readonly ExcalidrawElement[],
+      );
+    }
+  }, []);
 
   const handleChange = useCallback(
     (
@@ -54,15 +71,46 @@ export default function App({
       appState: AppState,
       files: BinaryFiles,
     ) => {
-      if (!editable) return;
+      // Only proceed when elements actually changed — skip viewport/selection-only events.
+      const currentVersion = hashElementsVersion(elements);
+      if (currentVersion === prevVersionRef.current) return;
+      prevVersionRef.current = currentVersion;
+
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(async () => {
-        const json = serializeAsJSON(elements, appState, files, "local");
         try {
+          let body: BodyInit;
+          let contentTypeHeader: string;
+
+          if (contentType === "image/svg+xml") {
+            const nonDeleted = elements.filter((e) => !e.isDeleted);
+            const svg = await exportToSvg({ elements: nonDeleted, appState, files });
+            body = svg.outerHTML;
+            contentTypeHeader = "image/svg+xml";
+          } else if (contentType === "image/png") {
+            const nonDeleted = elements.filter((e) => !e.isDeleted);
+            const blob = await exportToBlob({
+              elements: nonDeleted,
+              appState,
+              files,
+              getDimensions(width: number, height: number) {
+                const scale = (appState as { exportScale?: number }).exportScale ?? 2;
+                return { width: width * scale, height: height * scale, scale };
+              },
+            });
+            if (!blob) return;
+            body = await blob.arrayBuffer();
+            contentTypeHeader = "image/png";
+          } else {
+            // application/json — default Excalidraw format
+            body = serializeAsJSON(elements, appState, files, "local");
+            contentTypeHeader = "application/json";
+          }
+
           const res = await fetch("/data", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: json,
+            headers: { "Content-Type": contentTypeHeader },
+            body,
           });
           if (res.ok) {
             // Suppress the SSE echo from the file-watcher for 2 seconds.
@@ -73,7 +121,7 @@ export default function App({
         }
       }, SAVE_DEBOUNCE_MS);
     },
-    [editable, onSaved],
+    [contentType, onSaved],
   );
 
   return (
@@ -81,10 +129,9 @@ export default function App({
       <Excalidraw
         excalidrawAPI={onApiReady}
         initialData={{ ...initialData, scrollToContent: true }}
-        viewModeEnabled={!editable}
         theme={resolvedTheme}
         name={name}
-        onChange={editable ? handleChange : undefined}
+        onChange={handleChange}
         UIOptions={{
           canvasActions: {
             loadScene: false,
