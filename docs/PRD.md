@@ -435,13 +435,51 @@ excalidrawAPI.updateScene({ elements, appState, files })
 
 | Phase | Deliverable | Status |
 | --- | --- | --- |
-| M1 | Rust binary: wry window opens, serves static `index.html` | [ ] |
-| M2 | `webview-src/` scaffolded; Vite builds; `<Excalidraw>` renders from `/data` | [ ] |
-| M3 | File watcher + SSE + `updateScene` live reload working | [ ] |
+| M1 | Rust binary: wry window opens, serves static `index.html` | [x] |
+| M2 | `webview-src/` scaffolded; Vite builds; `<Excalidraw>` renders from `/data` | [x] |
+| M3 | File watcher + SSE + `updateScene` live reload working | [x] |
 | M4 | Zed extension spawns binary, slash command works end-to-end | [ ] |
-| M5 | Process reuse: lock file + `/focus` route | [ ] |
+| M5 | Process reuse: lock file + `/focus` route | [x] |
 | M6 | All three file formats (JSON/SVG/PNG) with fallback chain | [ ] |
 | M7 | Cross-platform CI: build matrix + prebuilt binary download | [ ] |
+
+## 16.1) TODO List
+
+### Companion Binary (excalidraw-preview)
+- [x] HTTP server with routes: `/`, `/config`, `/data`, `/events`, `/focus`, `/ping`, `/assets/*`
+- [x] WebView window via wry/tao
+- [x] File watcher with 80ms debounce
+- [x] SSE live reload
+- [x] Lock file for process reuse
+- [x] Graceful error handling for headless environments
+- [ ] `/focus` route: actually bring window to front
+- [ ] Clean shutdown via signal handling (SIGTERM, SIGINT)
+- [ ] Windows support
+- [ ] macOS support
+
+### WebView (React/Excalidraw)
+- [x] Vite build setup with `base: '/assets/'`
+- [x] Fetch config and data from server
+- [x] Render Excalidraw diagram
+- [x] `scrollToContent: true` on initial load
+- [x] OS theme detection (prefers-color-scheme)
+- [x] SSE live reload with debounce
+- [x] Error overlay for failed loads
+- [ ] Format fallback chain (JSON → SVG → PNG)
+- [ ] SVG format support
+- [ ] PNG format support
+
+### Zed Extension
+- [ ] WASM extension scaffold
+- [ ] `/preview-excalidraw` slash command
+- [ ] Spawn companion binary
+- [ ] Track PIDs + ports per file
+- [ ] Focus existing window on re-invoke
+
+### Testing & CI
+- [ ] Integration tests for companion binary
+- [ ] Cross-platform CI (macOS, Linux, Windows)
+- [ ] Prebuilt binary releases
 
 ---
 

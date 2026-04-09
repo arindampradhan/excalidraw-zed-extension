@@ -45,16 +45,32 @@ Re-running the command focuses the existing window instead of opening a new one.
 
 ## Build
 
+### Prerequisites
+
+- **Rust** (via `rustup`) + **Cargo**
+- **Node.js** (for building the webview)
+- **macOS**: WebKit (built-in)
+- **Linux**: `libwebkit2gtk-4.1-dev` or `libwebkit2gtk-4.0-dev` (e.g., `sudo apt install libwebkit2gtk-4.1-dev`)
+- **Windows**: WebView2 (built-in on Win11; runtime bootstrapper needed on older Win10)
+
+### Build Steps
+
 ```bash
-# 1. Build the webview React app (must run before cargo build)
+# 1. Install the WASM target for Zed extensions
+rustup target add wasm32-wasip1
+
+# 2. Build the webview React app (must run before cargo build)
 cd preview-binary/webview-src && npm install && npm run build && cd ../..
 
-# 2. Build companion binary (native)
-cargo build -p preview-binary --release
+# 3. Build companion binary (native)
+cargo build -p excalidraw-preview-binary --release
 
-# 3. Build Zed extension (WASM)
-rustup target add wasm32-wasip1
-cargo build -p extension --release --target wasm32-wasip1
+# 4. Build Zed extension (WASM)
+cargo build -p excalidraw-preview --release --target wasm32-wasip1
+
+# 5. Verify the build succeeded
+ls -la target/release/excalidraw-preview
+ls -la target/wasm32-wasip1/release/excalidraw_preview.wasm
 ```
 
 ## Run Without Zed

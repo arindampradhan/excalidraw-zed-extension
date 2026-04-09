@@ -1,0 +1,31 @@
+[package]
+name = "excalidraw-preview-binary"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "excalidraw-preview"
+path = "src/main.rs"
+
+[dependencies]
+wry = "0.43"
+tao = "0.30"
+axum = { version = "0.8", features = ["tokio", "macros"] }
+tokio = { version = "1", features = ["full"] }
+async-stream = "0.3"
+hyper = "1"
+notify = "6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+sha2 = "0.10"
+rust-embed = "8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { version = "0.12", features = ["json"] }
+mime_guess = "2"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+tempfile = "3"

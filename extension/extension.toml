@@ -1,0 +1,14 @@
+id = "excalidraw-preview"
+name = "Excalidraw Preview"
+version = "0.1.0"
+schema_version = 1
+authors = ["Arindam Pradhan"]
+description = "Preview .excalidraw files in a native window"
+repository = "https://github.com/arindampradhan/excalidraw-zed-extension"
+
+[capabilities]
+process = "excalidraw-preview"
+
+[slash_commands.preview-excalidraw]
+description = "Open live preview for the active .excalidraw file"
+requires_argument = true

@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "extension",
+    "preview-binary",
+]
+resolver = "2"

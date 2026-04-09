@@ -1,0 +1,23 @@
+# Rust build output
+target/
+**/*.rs.bk
+
+# Node modules (webview-src)
+preview-binary/webview-src/node_modules/
+preview-binary/webview-src/dist/
+preview-binary/webview-src/.vite/
+preview-binary/assets/assets
+
+# Lock files
+preview-binary/Cargo.lock
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
