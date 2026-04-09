@@ -54,6 +54,8 @@ impl ExcalidrawPreviewExtension {
         let root = worktree.root_path();
         let root_path = PathBuf::from(&root);
 
+        // Try to read active file from worktree - this is a best effort approach
+        // The slash command should ideally receive the active buffer path from Zed
         if let Ok(entries) = std::fs::read_dir(&root_path) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -72,6 +74,15 @@ impl ExcalidrawPreviewExtension {
         }
         None
     }
+
+    fn get_active_file_path(worktree: &Worktree) -> Option<PathBuf> {
+        let root = worktree.root_path();
+
+        // Try common locations where Zed might store the active buffer info
+        // For now, we rely on the fact that users will provide the file as an argument
+        // or the command is run from the context of an open .excalidraw file
+        None
+    }
 }
 
 impl Extension for ExcalidrawPreviewExtension {
@@ -87,9 +98,9 @@ impl Extension for ExcalidrawPreviewExtension {
         worktree: &Worktree,
     ) -> Result<Command> {
         if language_server_id.as_ref() == "excalidraw-preview" {
-            let binary = worktree
-                .which("excalidraw-preview")
-                .ok_or("excalidraw-preview not found in PATH. Run: cargo install --path preview-binary")?;
+            let binary = worktree.which("excalidraw-preview").ok_or(
+                "excalidraw-preview not found in PATH. Run: cargo install --path preview-binary",
+            )?;
             Ok(Command {
                 command: binary,
                 args: vec!["--lsp".into()],

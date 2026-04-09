@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { Excalidraw, serializeAsJSON } from '@excalidraw/excalidraw';
-import '@excalidraw/excalidraw/index.css';
+import { useState, useEffect, useCallback, useRef } from "react";
+import { Excalidraw, serializeAsJSON } from "@excalidraw/excalidraw";
+import "@excalidraw/excalidraw/index.css";
 
 interface AppProps {
   initialData: ExcalidrawInitialDataState;
@@ -12,18 +12,21 @@ interface AppProps {
   onSaved: (suppressUntil: number) => void;
 }
 
-function useOsTheme(preference: 'auto' | 'light' | 'dark'): 'light' | 'dark' {
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    if (preference !== 'auto') return preference;
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+function useOsTheme(preference: "auto" | "light" | "dark"): "light" | "dark" {
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    if (preference !== "auto") return preference;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light";
   });
 
   useEffect(() => {
-    if (preference !== 'auto') return;
-    const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    const handler = (e: MediaQueryListEvent) => setTheme(e.matches ? 'dark' : 'light');
-    mq.addEventListener('change', handler);
-    return () => mq.removeEventListener('change', handler);
+    if (preference !== "auto") return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const handler = (e: MediaQueryListEvent) =>
+      setTheme(e.matches ? "dark" : "light");
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
   }, [preference]);
 
   return theme;
@@ -31,10 +34,17 @@ function useOsTheme(preference: 'auto' | 'light' | 'dark'): 'light' | 'dark' {
 
 const SAVE_DEBOUNCE_MS = 600;
 
-export default function App({ initialData, theme, name, contentType, onApiReady, onSaved }: AppProps) {
-  const resolvedTheme = useOsTheme(theme as 'auto' | 'light' | 'dark');
+export default function App({
+  initialData,
+  theme,
+  name,
+  contentType,
+  onApiReady,
+  onSaved,
+}: AppProps) {
+  const resolvedTheme = useOsTheme(theme as "auto" | "light" | "dark");
   // Only JSON files support round-trip editing; SVG/PNG are view-only.
-  const editable = contentType === 'application/json';
+  const editable = contentType === "application/json";
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -47,11 +57,11 @@ export default function App({ initialData, theme, name, contentType, onApiReady,
       if (!editable) return;
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(async () => {
-        const json = serializeAsJSON(elements, appState, files, 'local');
+        const json = serializeAsJSON(elements, appState, files, "local");
         try {
-          const res = await fetch('/data', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+          const res = await fetch("/data", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
             body: json,
           });
           if (res.ok) {
@@ -67,7 +77,7 @@ export default function App({ initialData, theme, name, contentType, onApiReady,
   );
 
   return (
-    <div style={{ height: '100%' }}>
+    <div style={{ height: "100%" }}>
       <Excalidraw
         excalidrawAPI={onApiReady}
         initialData={{ ...initialData, scrollToContent: true }}

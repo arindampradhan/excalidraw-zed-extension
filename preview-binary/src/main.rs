@@ -169,7 +169,10 @@ fn main() -> Result<()> {
 
     // Run the WebView event loop on the main thread (required on macOS / some Linux WMs).
     if let Err(e) = run_webview(port, focus_rx) {
-        eprintln!("WebView error: {}. Server running at http://127.0.0.1:{}", e, port);
+        eprintln!(
+            "WebView error: {}. Server running at http://127.0.0.1:{}",
+            e, port
+        );
         eprintln!("(WebView not available in this environment)");
         // Keep server running briefly so user can test
         std::thread::sleep(std::time::Duration::from_secs(60));
@@ -268,18 +271,11 @@ async fn serve_data(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match std::fs::read(&state.file_path) {
         Ok(data) => (
             axum::http::StatusCode::OK,
-            [(
-                axum::http::header::CONTENT_TYPE,
-                state.content_type.clone(),
-            )],
+            [(axum::http::header::CONTENT_TYPE, state.content_type.clone())],
             data,
         )
             .into_response(),
-        Err(e) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            e.to_string(),
-        )
-            .into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
@@ -291,11 +287,7 @@ async fn receive_data(
 ) -> impl IntoResponse {
     match std::fs::write(&state.file_path, &body) {
         Ok(_) => axum::http::StatusCode::OK.into_response(),
-        Err(e) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            e.to_string(),
-        )
-            .into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
@@ -336,9 +328,7 @@ async fn ping() -> impl IntoResponse {
     "OK"
 }
 
-async fn serve_assets(
-    axum::extract::Path(path): axum::extract::Path<String>,
-) -> impl IntoResponse {
+async fn serve_assets(axum::extract::Path(path): axum::extract::Path<String>) -> impl IntoResponse {
     let path = path.strip_prefix("/").unwrap_or(&path);
     match Assets::get(path) {
         Some(content) => {
@@ -360,7 +350,10 @@ async fn serve_assets(
 
 /// Runs the native WebView window. Blocks until the window is closed.
 #[cfg(target_os = "linux")]
-fn run_webview(port: u16, _focus_rx: watch::Receiver<bool>) -> Result<(), Box<dyn std::error::Error>> {
+fn run_webview(
+    port: u16,
+    _focus_rx: watch::Receiver<bool>,
+) -> Result<(), Box<dyn std::error::Error>> {
     use gtk::glib::Propagation;
     use gtk::prelude::*;
     use wry::WebViewBuilderExtUnix;
@@ -392,7 +385,10 @@ fn run_webview(port: u16, _focus_rx: watch::Receiver<bool>) -> Result<(), Box<dy
 
 /// Runs the native WebView window. Blocks until the window is closed.
 #[cfg(not(target_os = "linux"))]
-fn run_webview(port: u16, mut focus_rx: watch::Receiver<bool>) -> Result<(), Box<dyn std::error::Error>> {
+fn run_webview(
+    port: u16,
+    mut focus_rx: watch::Receiver<bool>,
+) -> Result<(), Box<dyn std::error::Error>> {
     use tao::{
         event_loop::{ControlFlow, EventLoop},
         window::WindowBuilder,
@@ -761,7 +757,12 @@ mod tests {
     async fn test_ping_returns_200() {
         let app = Router::new().route("/ping", get(ping));
         let response = app
-            .oneshot(Request::builder().uri("/ping").body(axum::body::Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/ping")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -774,7 +775,12 @@ mod tests {
         let app = json_app(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/config").body(axum::body::Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/config")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -792,7 +798,12 @@ mod tests {
         let app = json_app(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/config").body(axum::body::Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/config")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -813,7 +824,12 @@ mod tests {
         let app = json_app(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/data").body(axum::body::Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/data")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -831,7 +847,12 @@ mod tests {
         let app = json_app(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/data").body(axum::body::Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/data")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -858,7 +879,12 @@ mod tests {
             .with_state(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/focus").body(axum::body::Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/focus")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -876,12 +902,15 @@ mod tests {
         // a real `assets/` directory this is expected to return 404.
         let app = Router::new().route("/", get(serve_index));
         let response = app
-            .oneshot(Request::builder().uri("/").body(axum::body::Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         // Either 200 (assets present) or 404 (no assets in test build) is acceptable.
-        assert!(
-            response.status() == StatusCode::OK || response.status() == StatusCode::NOT_FOUND
-        );
+        assert!(response.status() == StatusCode::OK || response.status() == StatusCode::NOT_FOUND);
     }
 }

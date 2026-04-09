@@ -1,27 +1,50 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Excalidraw Preview</title>
-  <style>
-    body, html { margin: 0; height: 100%; overflow: hidden; }
-    #root { height: 100%; }
-    #error {
-      display: none; position: fixed; top: 0; left: 0; width: 100%;
-      padding: 1em; background: #fee2e2; color: #991b1b;
-      font-family: monospace; white-space: pre-wrap; z-index: 9999;
-    }
-  </style>
-  <script type="module" crossorigin src="/assets/assets/index-B1qvuoNw.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/assets/index-Cq598ax7.css">
-</head>
-<body>
-  <div id="root"></div>
-  <div id="error"></div>
-  <script>
-    window.EXCALIDRAW_ASSET_PATH = "/assets/";
-    window.EXCALIDRAW_EXPORT_SOURCE = "excalidraw-zed-preview";
-  </script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Excalidraw Preview</title>
+    <style>
+      body,
+      html {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+      }
+      #root {
+        height: 100%;
+      }
+      #error {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        padding: 1em;
+        background: #fee2e2;
+        color: #991b1b;
+        font-family: monospace;
+        white-space: pre-wrap;
+        z-index: 9999;
+      }
+    </style>
+    <script>
+      window.EXCALIDRAW_ASSET_PATH = "/assets/";
+      window.EXCALIDRAW_EXPORT_SOURCE = "excalidraw-zed-preview";
+    </script>
+    <script
+      type="module"
+      crossorigin
+      src="/assets/assets/index-B1qvuoNw.js"
+    ></script>
+    <link
+      rel="stylesheet"
+      crossorigin
+      href="/assets/assets/index-Cq598ax7.css"
+    />
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="error"></div>
+  </body>
 </html>

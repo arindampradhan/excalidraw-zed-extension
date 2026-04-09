@@ -17,7 +17,7 @@ export default defineConfig({
               contentType: "application/json",
               name: "test.excalidraw",
               theme: "auto",
-            })
+            }),
           );
         });
         server.middlewares.use("/data", (_, res) => {
