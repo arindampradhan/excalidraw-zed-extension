@@ -5,11 +5,12 @@
 
 ## Project Purpose
 
-A Zed editor extension that previews `.excalidraw` files in a native WebView window
-(powered by `wry`). The preview live-reloads on file save. No browser tabs. No
-in-editor UI panes. Pure offline, near-zero-latency diagram preview.
+A Zed editor extension that previews `.excalidraw` files in a native WebView window (powered by `wry`). The preview live-reloads on file save. No browser tabs. No in-editor UI panes. Pure offline, near-zero-latency diagram preview.
+
+Supports all three Excalidraw file formats: `.excalidraw` (JSON), `.excalidraw.svg`, `.excalidraw.png`.
 
 See [`docs/PRD.md`](docs/PRD.md) for the full product requirements.
+See [`refs/excalidraw-vscode/`](refs/excalidraw-vscode/) (git submodule) for the reference implementation this is adapted from.
 
 ---
 
@@ -18,42 +19,50 @@ See [`docs/PRD.md`](docs/PRD.md) for the full product requirements.
 ```
 excalidraw-zed-extension/
 │
-├── AGENT.md                   ← you are here (source of truth)
-├── CLAUDE.md                  ← symlink → AGENT.md
+├── AGENT.md                        ← you are here (source of truth)
+├── CLAUDE.md                       ← symlink → AGENT.md
 ├── docs/
-│   └── PRD.md                 ← full product requirements doc
+│   └── PRD.md                      ← full product requirements doc
 │
-├── extension/                 ← Zed extension (Rust → WASM)
+├── extension/                      ← Zed extension (Rust → WASM)
 │   ├── Cargo.toml
 │   ├── src/
-│   │   └── lib.rs             ← extension entry point
-│   └── extension.toml         ← Zed extension manifest
+│   │   └── lib.rs                  ← slash command, spawn binary, focus ping
+│   └── extension.toml              ← Zed extension manifest
 │
-├── preview-binary/            ← companion native binary
+├── preview-binary/                 ← companion native binary
 │   ├── Cargo.toml
 │   ├── src/
-│   │   ├── main.rs            ← CLI entry, arg parsing, orchestration
-│   │   ├── server.rs          ← HTTP server (axum) + SSE
-│   │   ├── watcher.rs         ← file watcher (notify crate)
-│   │   ├── webview.rs         ← wry WebView window lifecycle
-│   │   └── assets.rs          ← embed & serve static assets via include_bytes!
-│   ├── webview-src/           ← React + Vite source (npm project)
-│   │   ├── package.json       ← @excalidraw/excalidraw ^0.18, react ^18, vite
-│   │   ├── vite.config.ts     ← outDir: "../assets", base: "/assets/"
+│   │   ├── main.rs                 ← CLI entry, arg parsing, orchestration
+│   │   ├── server.rs               ← axum HTTP server + SSE + all routes
+│   │   ├── watcher.rs              ← notify file watcher, 80 ms debounce
+│   │   ├── webview.rs              ← wry WebView window lifecycle
+│   │   └── assets.rs               ← include_bytes! embed + serve assets/
+│   ├── webview-src/                ← React + Vite source (npm project)
+│   │   ├── package.json            ← @excalidraw/excalidraw ^0.18, react ^18, vite
+│   │   ├── vite.config.ts          ← outDir: "../assets", base: "/assets/"
 │   │   ├── index.html
 │   │   └── src/
-│   │       ├── main.tsx       ← fetch /data → loadFromBlob → <Excalidraw>, SSE reload
-│   │       ├── App.tsx        ← <Excalidraw> component wrapper (view-only)
+│   │       ├── main.tsx            ← fetch /config + /data → loadFromBlob → render, SSE
+│   │       ├── App.tsx             ← <Excalidraw> view-only wrapper
+│   │       ├── useOsTheme.ts       ← prefers-color-scheme → "light"|"dark"
 │   │       └── styles.css
-│   └── assets/                ← Vite build output (embedded in binary at compile time)
-│       ├── index.html         ← served at GET /
-│       ├── main.js            ← compiled React + Excalidraw bundle
-│       └── *.woff2, *.wasm    ← Excalidraw runtime assets (served at GET /assets/*)
+│   └── assets/                     ← Vite build output; committed; embedded at compile time
+│       ├── index.html              ← served at GET /
+│       └── assets/
+│           ├── main-[hash].js      ← React + Excalidraw bundle
+│           ├── main-[hash].css
+│           └── *.woff2, *.wasm     ← Excalidraw runtime assets (GET /assets/*)
 │
 ├── refs/
-│   └── excalidraw-vscode/     ← git submodule: reference implementation
+│   └── excalidraw-vscode/          ← git submodule: VS Code reference implementation
 │
-└── Cargo.toml                 ← workspace root
+├── .claude/
+│   └── skills/
+│       └── zed-extension/
+│           └── SKILL.md            ← Zed extension scaffolding skill
+│
+└── Cargo.toml                      ← workspace root
 ```
 
 ---
@@ -85,6 +94,7 @@ version = "0.1.0"
 schema_version = 1
 authors = ["you"]
 description = "Preview .excalidraw files in a native window"
+repository = "https://github.com/you/excalidraw-zed-extension"
 
 [slash_commands.preview-excalidraw]
 description = "Open live preview for the active .excalidraw file"
@@ -97,14 +107,14 @@ requires_argument = false
 2. Register `/preview-excalidraw` slash command.
 3. On command run:
    - Get `worktree` + active file path via extension API.
-   - Validate extension is `.excalidraw`.
+   - Validate extension is `.excalidraw`, `.excalidraw.svg`, or `.excalidraw.png`.
    - Resolve path to companion binary (`excalidraw-preview`).
-   - `std::process::Command::new(binary).arg(file_path).spawn()`.
-4. Track spawned PIDs in a `HashMap<PathBuf, u32>` (in-memory, single process lifetime).
-5. On re-invoke for same file: send HTTP ping to `http://127.0.0.1:{port}/focus` (port stored alongside PID).
+   - Spawn via `zed_extension_api::process::Command::new(binary).arg(file_path).spawn()`.
+4. Track `HashMap<PathBuf, (u32, u16)>` — PID + port per file (in-memory, single process lifetime).
+5. On re-invoke for same file: `GET http://127.0.0.1:{port}/focus` (HTTP ping via `zed::http_client_get`).
 
-**Key constraint:** WASM extensions cannot do async I/O or open sockets directly.
-All networking/UI work must live in the companion binary.
+**Key constraint:** WASM extensions cannot open sockets or use `std::process`.
+Use `zed_extension_api::process::Command` and `zed::http_client_get` only.
 
 ---
 
@@ -119,38 +129,42 @@ CLI: excalidraw-preview <file-path> [--port <port>] [--debug]
 ```
 
 Startup sequence:
-1. Parse args.
-2. Check if another instance owns this file (lock file or `/ping` probe).
-3. If yes → send `/focus` request and exit.
-4. Bind HTTP server on ephemeral port (or `--port`).
-5. Write port to lock file: `$TMPDIR/excalidraw-preview-{hash(file)}.port`.
-6. Spawn file watcher thread.
-7. Open WebView window pointing to `http://127.0.0.1:{port}`.
-8. Run event loop (blocks until window closes).
-9. On exit: remove lock file.
+1. Parse args with `clap`.
+2. Detect file format from extension → `ContentType` enum (`Json` | `Svg` | `Png`).
+3. Check lock file `$TMPDIR/excalidraw-{sha256(canonical_path)}.lock`.
+   - If exists and port is live (`GET /ping` succeeds) → send `GET /focus` and exit.
+   - If exists but stale → remove and continue.
+4. Bind axum server on ephemeral port (or `--port`).
+5. Write port to lock file as plain text.
+6. Spawn file watcher thread (see `watcher.rs`).
+7. Open WebView window pointing to `http://127.0.0.1:{port}` (see `webview.rs`).
+8. Run event loop — blocks until window closes.
+9. On exit: remove lock file, shut down server.
 
 ### server.rs
 
-Routes:
-- `GET /`        → serve `index.html`
-- `GET /data`    → serve raw file JSON (`Content-Type: application/json`)
-- `GET /events`  → SSE stream; sends `data: reload\n\n` on file change
-- `GET /focus`   → bring window to front (platform call via `wry`/`tao`)
-- `GET /assets/*`→ serve bundled JS/CSS
+All routes served by axum (tokio):
 
-Use `axum` (tokio) or `tiny-http` (sync). Prefer `axum` for SSE ergonomics.
+| Route | Handler |
+|---|---|
+| `GET /` | serve embedded `index.html` |
+| `GET /config` | return `{ contentType, name, theme: "auto" }` as JSON |
+| `GET /data` | read file from disk, return bytes with correct `Content-Type` |
+| `GET /events` | SSE stream; subscribe to broadcast channel; emit `data: reload\n\n` |
+| `GET /focus` | signal webview window to call `window.set_focus()` |
+| `GET /ping` | return 200 OK (liveness probe) |
+| `GET /assets/*` | serve embedded assets from `assets.rs` |
+
+SSE channel: `tokio::sync::broadcast::channel::<()>(16)`. Watcher sends `()` on file change; SSE handler subscribes and streams.
 
 ### watcher.rs
 
-Use `notify` crate (v6). Watch the target file with `RecommendedWatcher`.
-On `EventKind::Modify` or `EventKind::Create` → broadcast to SSE channel
-(use `tokio::sync::broadcast` or `std::sync::mpsc` bridged to async).
-
-Debounce: 80 ms to avoid double-fire on save.
+- Use `notify` v6 `RecommendedWatcher`.
+- Watch target file for `EventKind::Modify(_)` and `EventKind::Create(_)`.
+- Debounce: 80 ms (drop duplicate events within window).
+- On trigger: `broadcast_tx.send(())`.
 
 ### webview.rs
-
-Use `wry` + `tao` for cross-platform WebView window.
 
 ```rust
 let event_loop = EventLoop::new();
@@ -158,48 +172,147 @@ let window = WindowBuilder::new()
     .with_title("Excalidraw Preview")
     .with_inner_size(LogicalSize::new(1200, 800))
     .build(&event_loop)?;
-let webview = WebViewBuilder::new(window)?
-    .with_url(&format!("http://127.0.0.1:{}", port))?
+let webview = WebViewBuilder::new(&window)
+    .with_url(&format!("http://127.0.0.1:{}", port))
     .build()?;
-event_loop.run(move |event, _, control_flow| { ... });
+event_loop.run(move |event, _, control_flow| {
+    match event {
+        Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
+            *control_flow = ControlFlow::Exit;
+        }
+        _ => *control_flow = ControlFlow::Wait,
+    }
+});
 ```
 
-Focus handler: expose a channel that `/focus` HTTP route can signal; on signal
-call `window.set_focus()`.
+Focus signal: a `tokio::sync::watch` channel; `/focus` route sends to it; the event loop polls it and calls `window.set_focus()`.
 
 ### assets.rs
 
-Use `include_str!` / `include_bytes!` macros to embed `assets/` at compile time.
-Return appropriate `Content-Type` headers.
+Embeds the entire `assets/` directory at compile time. Use `rust-embed` crate (or manual `include_bytes!` per file) to serve with correct `Content-Type` headers keyed by file extension.
 
 ---
 
-## Component 3 — Web UI (`preview-binary/assets/`)
+## Component 3 — Web UI (`preview-binary/webview-src/`)
 
-### index.html skeleton
+Reference: `refs/excalidraw-vscode/webview/` — adapt, don't copy verbatim (no VS Code APIs).
 
-```html
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Excalidraw Preview</title>
-  <style>body,html{margin:0;height:100%} #app{height:100%}</style>
-</head>
-<body>
-  <div id="app"></div>
-  <script src="/assets/excalidraw.min.js"></script>
-  <script src="/assets/loader.js"></script>
-</body>
-</html>
+### Key differences from excalidraw-vscode
+
+| excalidraw-vscode | This project |
+|---|---|
+| Config via Base64 HTML attribute | Config via `GET /config` HTTP endpoint |
+| File content via same Base64 attribute | File content via `GET /data` HTTP endpoint |
+| Live updates via VS Code `postMessage` | Live updates via SSE `EventSource('/events')` |
+| `vscode.postMessage` write-back | Read-only, no write-back (v1) |
+| Asset path via `asWebviewUri` | Asset path hardcoded to `/assets/` |
+
+### main.tsx — startup sequence
+
+```ts
+// 1. Fetch config
+const config = await fetch('/config').then(r => r.json());
+// config: { contentType: string, name: string, theme: "auto" }
+
+// 2. Fetch raw file bytes
+const bytes = await fetch('/data').then(r => r.arrayBuffer());
+
+// 3. Load with format fallback chain (same logic as refs/excalidraw-vscode/webview/src/main.tsx)
+let initialData: ExcalidrawInitialDataState;
+const types = reorderFallbacks(config.contentType);  // try declared type first
+for (const type of types) {
+  try {
+    initialData = await loadFromBlob(
+      new Blob([bytes], { type }),
+      null, null
+    );
+    break;
+  } catch { /* try next */ }
+}
+if (!initialData) { showError("Failed to load file"); return; }
+
+// 4. Render
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <App initialData={initialData} config={config} />
+);
+
+// 5. SSE live reload
+const es = new EventSource('/events');
+es.onmessage = debounce(async () => {
+  const bytes = await fetch('/data').then(r => r.arrayBuffer());
+  const newData = await loadFromBlob(new Blob([bytes], { type: config.contentType }), null, null);
+  excalidrawApi?.updateScene(newData);
+}, 150);
 ```
 
-### loader.js responsibilities
+### App.tsx — Excalidraw component
 
-1. `fetch('/data')` → parse JSON → call `ExcalidrawLib.restore()` + render to `#app`.
-2. Open `EventSource('/events')`.
-3. On `message` with `data === 'reload'`: re-fetch `/data` and re-render.
-4. On parse error: overlay `<div id="error">` with message.
+```tsx
+import { Excalidraw } from "@excalidraw/excalidraw";
+import "@excalidraw/excalidraw/index.css";
+
+export default function App({ initialData, config }) {
+  const [api, setApi] = useState<ExcalidrawImperativeAPI>();
+  const theme = useOsTheme(config.theme); // "light" | "dark"
+
+  return (
+    <div style={{ height: "100%" }}>
+      <Excalidraw
+        excalidrawAPI={setApi}
+        initialData={{ ...initialData, scrollToContent: true }}
+        viewModeEnabled={true}
+        theme={theme}
+        name={config.name}
+        UIOptions={{
+          canvasActions: { loadScene: false, saveToActiveFile: false, export: false },
+        }}
+      />
+    </div>
+  );
+}
+```
+
+### useOsTheme.ts
+
+```ts
+export function useOsTheme(preference: "auto" | "light" | "dark"): "light" | "dark" {
+  const [theme, setTheme] = useState<"light" | "dark">(
+    preference !== "auto" ? preference :
+    window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
+  );
+  useEffect(() => {
+    if (preference !== "auto") return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const handler = (e: MediaQueryListEvent) => setTheme(e.matches ? "dark" : "light");
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, [preference]);
+  return theme;
+}
+```
+
+### File Format Fallback Chain
+
+```ts
+function reorderFallbacks(primary: string): string[] {
+  const all = ["application/json", "image/svg+xml", "image/png"];
+  return [primary, ...all.filter(t => t !== primary)];
+}
+```
+
+Matches logic in `refs/excalidraw-vscode/webview/src/main.tsx`.
+
+### window.EXCALIDRAW_ASSET_PATH
+
+Must be set **before** the React bundle loads:
+```html
+<script>
+  window.EXCALIDRAW_ASSET_PATH = "/assets/";
+</script>
+<script type="module" src="/assets/main.js"></script>
+```
+
+`@excalidraw/excalidraw` uses this to fetch its fonts and wasm modules at runtime. All these files are served by `assets.rs` from the embedded `assets/` directory.
 
 ---
 
@@ -209,7 +322,7 @@ Return appropriate `Content-Type` headers.
 
 ```toml
 [dependencies]
-zed_extension_api = "0.1"    # exact version per Zed extension SDK
+zed_extension_api = "0.1"
 ```
 
 ### preview-binary/Cargo.toml
@@ -221,13 +334,37 @@ tao        = "0.30"
 axum       = { version = "0.8", features = ["tokio"] }
 tokio      = { version = "1", features = ["full"] }
 notify     = "6"
+serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap       = { version = "4", features = ["derive"] }
+anyhow     = "1"
+sha2       = "0.10"          # for lock file path hashing
+rust-embed = "8"             # for embedding assets/ directory
 tracing    = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+```
 
-[build-dependencies]
-# none needed; assets embedded via include_bytes!
+### preview-binary/webview-src/package.json
+
+```json
+{
+  "dependencies": {
+    "@excalidraw/excalidraw": "^0.18.0",
+    "react": "^18",
+    "react-dom": "^18"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "latest",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "typescript": "^5",
+    "vite": "^6"
+  },
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite"
+  }
+}
 ```
 
 ---
@@ -235,26 +372,33 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ## Coding Conventions
 
 - Use `anyhow::Result` for error propagation in the binary; no `unwrap` in prod paths.
-- `tracing` for structured logs; gated behind `--debug` flag in release.
+- `tracing` for structured logs; gated behind `--debug` flag in release builds.
 - No `unsafe` unless required by `wry`/`tao` platform calls.
 - Format with `rustfmt` defaults; lint with `clippy -- -D warnings`.
 - All public items must have doc comments.
+- TypeScript strict mode in webview; no `any` types.
 
 ---
 
 ## Build & Run
 
 ```bash
-# Build companion binary (native)
+# 0. One-time: install WASM target
+rustup target add wasm32-wasip1
+
+# 1. Build webview (must run before cargo build if assets/ is not committed)
+cd preview-binary/webview-src && npm install && npm run build && cd ../..
+
+# 2. Build companion binary (native)
 cargo build -p preview-binary --release
 
-# Build Zed extension (WASM)
+# 3. Build Zed extension (WASM)
 cargo build -p extension --release --target wasm32-wasip1
 
-# Run binary directly for testing (no Zed)
+# 4a. Run binary directly for testing
 ./target/release/excalidraw-preview ./path/to/file.excalidraw --debug
 
-# Install extension into Zed (dev mode)
+# 4b. Install extension into Zed (dev mode)
 zed --install-dev-extension ./extension
 ```
 
@@ -262,33 +406,35 @@ zed --install-dev-extension ./extension
 
 ## Testing Strategy
 
-- **Unit**: `watcher.rs` debounce logic, `server.rs` route handlers (with `axum::test`).
-- **Integration**: spawn binary against a temp `.excalidraw` file; assert `/data` returns valid JSON; mutate file; assert SSE fires within 150 ms.
-- **Manual**: run against real Zed + `diagram.excalidraw`; measure reload latency with DevTools.
+- **Unit**: debounce logic in `watcher.rs`; route handlers in `server.rs` via `axum::test`.
+- **Integration**: spawn binary against a temp `.excalidraw` file; assert `GET /data` returns valid JSON; assert `GET /config` returns correct `contentType`; mutate file; assert SSE fires within 150 ms.
+- **Format tests**: test all three content types + fallback chain in `main.tsx` with vitest.
+- **Manual**: run against real Zed + `diagram.excalidraw`; measure reload latency with WebView DevTools.
 
 ---
 
 ## Milestones
 
-| Phase | Deliverable                              | Done? |
+| Phase | Deliverable | Done? |
 | ----- | ---------------------------------------- | ----- |
-| M1    | Rust binary opens WebView + static page  | [ ]   |
-| M2    | HTTP server + `/data` + asset serving    | [ ]   |
-| M3    | File watcher + SSE live reload           | [ ]   |
-| M4    | Zed extension spawns binary              | [ ]   |
-| M5    | Process reuse / `/focus` logic           | [ ]   |
-| M6    | Cross-platform packaging + CI            | [ ]   |
+| M1    | Rust binary opens wry window + serves static index.html | [ ] |
+| M2    | `webview-src/` scaffolded; Vite builds; `<Excalidraw>` renders from `/data` | [ ] |
+| M3    | File watcher + SSE + `updateScene` live reload | [ ] |
+| M4    | Zed extension spawns binary; slash command works end-to-end | [ ] |
+| M5    | Process reuse: lock file + `/focus` + `/ping` | [ ] |
+| M6    | All three file formats + fallback chain | [ ] |
+| M7    | Cross-platform CI + prebuilt binary download | [ ] |
 
 ---
 
 ## Constraints & Gotchas
 
-- **WASM sandbox**: extension code runs in `wasm32-wasip1`; no raw sockets, no
-  `std::process` access beyond what Zed's host exposes. Companion binary handles
-  all OS interaction.
-- **Linux WebKitGTK**: require `libwebkit2gtk-4.1-dev` or `libwebkit2gtk-4.0-dev`.
-  Print a clear error if missing.
-- **macOS notarization**: companion binary must be codesigned for distribution.
-- **Windows WebView2**: bundled in Win11; older Win10 needs runtime bootstrapper.
-- **Port lock file**: use `/tmp/excalidraw-{sha256(canonical_path)}.lock` containing
-  the port number as plain text. Remove on clean exit; check on startup.
+- **WASM sandbox**: extension runs in `wasm32-wasip1`; use `zed_extension_api::process::Command` (not `std::process`) and `zed::http_client_get` (not raw sockets).
+- **`window.EXCALIDRAW_ASSET_PATH`**: must be set in a `<script>` block *before* the module script loads, or Excalidraw will fail to fetch fonts/wasm.
+- **assets/ directory**: Vite outputs `assets/assets/main-[hash].js` (nested). The outer `assets/` is the root served at `/`; the inner `assets/` is the JS/CSS/font dir served at `/assets/`. Ensure `assets.rs` handles both `index.html` (at root) and everything under `assets/`.
+- **Linux WebKitGTK**: require `libwebkit2gtk-4.1-dev` or `libwebkit2gtk-4.0-dev`. Print a clear error if the library is missing at startup.
+- **macOS notarization**: companion binary must be codesigned + notarized for non-dev distribution.
+- **Windows WebView2**: bundled in Win11; older Win10 needs the runtime bootstrapper.
+- **Lock file cleanup**: always remove `$TMPDIR/excalidraw-{sha256}.lock` on exit. Use a `Drop` impl to handle panics and signals.
+- **Format detection**: detect by file *extension*, not by sniffing bytes. Extension is authoritative; fallback chain handles mismatches.
+- **`scrollToContent: true`**: must be set on `initialData` passed to `<Excalidraw>` so the diagram auto-fits the window on first load.
