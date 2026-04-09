@@ -2,7 +2,19 @@
   "permissions": {
     "allow": [
       "Bash(ln:*)",
-      "Bash(git submodule:*)"
+      "Bash(git submodule:*)",
+      "Bash(cargo metadata:*)",
+      "Bash(python3 -c \"import sys,json; m=json.load\\(sys.stdin\\); [print\\(p['manifest_path']\\) for p in m['packages'] if 'zed_extension_api' in p['name']]\")",
+      "Bash(cargo build:*)",
+      "Bash(cp /home/arindampradhan/Developer/excalidraw-zed-extension/target/release/excalidraw-preview ~/.local/bin/excalidraw-preview)",
+      "Bash(chmod +x ~/.local/bin/excalidraw-preview)",
+      "Bash(xdg-open:*)",
+      "Bash(xargs cat:*)",
+      "Bash(python3 -m json.tool)",
+      "Bash(sudo cp:*)",
+      "Bash(python3 -m json.tool ~/.local/share/zed/extensions/index.json)",
+      "Bash(python3 -c ':*)",
+      "Bash(npm run:*)"
     ]
   }
 }

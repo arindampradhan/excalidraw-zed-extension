@@ -20,6 +20,7 @@ use tracing::info;
 #[derive(Clone)]
 struct AppState {
     file_path: PathBuf,
+    lock_path: PathBuf,
     content_type: String,
     file_name: String,
     broadcast_tx: broadcast::Sender<()>,
@@ -42,13 +43,21 @@ struct ConfigResponse {
 fn main() -> Result<()> {
     let args = CliArgs::parse();
 
+    if args.lsp {
+        return run_lsp_server();
+    }
+
     if args.debug {
         tracing_subscriber::fmt()
             .with_env_filter("excalidraw_preview=debug")
             .init();
     }
 
-    let file_path = PathBuf::from(&args.file);
+    let file = args
+        .file
+        .ok_or_else(|| anyhow::anyhow!("Usage: excalidraw-preview <file> [--port <port>] [--debug]\n       excalidraw-preview --lsp"))?;
+
+    let file_path = PathBuf::from(&file);
     if !file_path.exists() {
         anyhow::bail!("File not found: {}", file_path.display());
     }
@@ -87,6 +96,7 @@ fn main() -> Result<()> {
 
     let state = Arc::new(AppState {
         file_path: canonical_path.clone(),
+        lock_path: lock_path.clone(),
         content_type,
         file_name,
         broadcast_tx: broadcast_tx.clone(),
@@ -102,9 +112,10 @@ fn main() -> Result<()> {
     let app = Router::new()
         .route("/", get(serve_index))
         .route("/config", get(serve_config))
-        .route("/data", get(serve_data))
+        .route("/data", get(serve_data).post(receive_data))
         .route("/events", get(serve_events))
         .route("/focus", get(handle_focus))
+        .route("/shutdown", get(handle_shutdown))
         .route("/ping", get(ping))
         .route("/assets/{*path}", get(serve_assets))
         .with_state(state.clone());
@@ -272,6 +283,22 @@ async fn serve_data(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }
 }
 
+/// Receives edited scene data from the WebView and writes it back to disk.
+/// The file watcher will fire after this write; the client suppresses that SSE event.
+async fn receive_data(
+    State(state): State<Arc<AppState>>,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    match std::fs::write(&state.file_path, &body) {
+        Ok(_) => axum::http::StatusCode::OK.into_response(),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            e.to_string(),
+        )
+            .into_response(),
+    }
+}
+
 async fn serve_events(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     use axum::response::sse::{Event, Sse};
 
@@ -292,6 +319,16 @@ async fn serve_events(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
 async fn handle_focus(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let _ = state.focus_tx.send(true);
+    "OK"
+}
+
+async fn handle_shutdown(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let lock_path = state.lock_path.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let _ = std::fs::remove_file(&lock_path);
+        std::process::exit(0);
+    });
     "OK"
 }
 
@@ -403,13 +440,216 @@ fn run_webview(port: u16, mut focus_rx: watch::Receiver<bool>) -> Result<(), Box
 #[command(about = "Preview Excalidraw files in a native window")]
 struct CliArgs {
     /// Path to the .excalidraw, .excalidraw.svg, or .excalidraw.png file to preview.
-    file: String,
+    /// Not required when running as an LSP server (--lsp).
+    file: Option<String>,
     /// Bind the HTTP server to this port (default: auto-selected).
     #[arg(long)]
     port: Option<u16>,
     /// Enable debug logging.
     #[arg(long)]
     debug: bool,
+    /// Run as a minimal LSP server for Zed integration.
+    /// Zed will call this automatically when a .excalidraw file is opened.
+    #[arg(long)]
+    lsp: bool,
+}
+
+// ── LSP server ───────────────────────────────────────────────────────────────
+
+/// Minimal JSON-RPC LSP server.
+///
+/// Zed starts this when a `.excalidraw` file is opened (via `language_server_command`).
+/// On `textDocument/didOpen` it spawns the preview window for that file and exits
+/// the notification without blocking the LSP loop.
+fn run_lsp_server() -> Result<()> {
+    use std::io::{BufRead, BufReader, Read};
+
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let mut reader = BufReader::new(stdin.lock());
+    let mut writer = stdout.lock();
+
+    let exe = std::env::current_exe()?;
+
+    loop {
+        // ── Read headers ────────────────────────────────────────────────────
+        let mut content_length: Option<usize> = None;
+        loop {
+            let mut line = String::new();
+            let n = reader.read_line(&mut line)?;
+            if n == 0 {
+                return Ok(()); // EOF — Zed closed stdin
+            }
+            let trimmed = line.trim_end_matches(['\r', '\n']);
+            if trimmed.is_empty() {
+                break; // blank line separates headers from body
+            }
+            if let Some(val) = trimmed.strip_prefix("Content-Length: ") {
+                content_length = val.trim().parse().ok();
+            }
+        }
+
+        let len = match content_length {
+            Some(l) if l > 0 => l,
+            _ => continue,
+        };
+
+        // ── Read body ────────────────────────────────────────────────────────
+        let mut body = vec![0u8; len];
+        reader.read_exact(&mut body)?;
+
+        let msg: serde_json::Value =
+            serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+        let method = msg["method"].as_str().unwrap_or("");
+        let id = msg.get("id").cloned();
+
+        // ── Dispatch ─────────────────────────────────────────────────────────
+        match method {
+            "initialize" => {
+                let response = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "capabilities": {
+                            // 1 = Full sync — Zed will send textDocument/didOpen
+                            "textDocumentSync": 1
+                        },
+                        "serverInfo": { "name": "excalidraw-preview", "version": "0.1.0" }
+                    }
+                });
+                lsp_send(&mut writer, &response)?;
+            }
+
+            "initialized" => { /* notification — no response required */ }
+
+            "textDocument/didOpen" => {
+                if let Some(uri) = msg["params"]["textDocument"]["uri"].as_str() {
+                    if let Some(path) = file_uri_to_path(uri) {
+                        spawn_preview(&exe, &path);
+                    }
+                }
+            }
+
+            "textDocument/didClose" => {
+                if let Some(uri) = msg["params"]["textDocument"]["uri"].as_str() {
+                    if let Some(path) = file_uri_to_path(uri) {
+                        shutdown_preview(&path);
+                    }
+                }
+            }
+
+            "shutdown" => {
+                lsp_send(
+                    &mut writer,
+                    &serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": null }),
+                )?;
+            }
+
+            "exit" => break,
+
+            _ => {
+                // Respond to unknown *requests* with "method not found".
+                // Notifications (no id) are silently ignored.
+                if let Some(id) = id {
+                    lsp_send(
+                        &mut writer,
+                        &serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": { "code": -32601, "message": "Method not found" }
+                        }),
+                    )?;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Writes a single LSP message to `writer` (Content-Length framing).
+fn lsp_send(writer: &mut impl std::io::Write, msg: &serde_json::Value) -> Result<()> {
+    let body = serde_json::to_string(msg)?;
+    write!(writer, "Content-Length: {}\r\n\r\n{}", body.len(), body)?;
+    writer.flush()?;
+    Ok(())
+}
+
+/// Spawns `excalidraw-preview <path>` as a fully detached process so that
+/// closing the LSP server (when Zed shuts down the language server) does not
+/// kill the preview window.
+fn spawn_preview(exe: &std::path::Path, path: &str) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        let _ = std::process::Command::new(exe)
+            .arg(path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .process_group(0) // new process group → immune to SIGHUP
+            .spawn();
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = std::process::Command::new(exe)
+            .arg(path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+}
+
+/// Sends GET /shutdown to the preview server for the given file path.
+/// Reads the port from the lock file, then calls the HTTP endpoint.
+fn shutdown_preview(path: &str) {
+    let canonical = match std::fs::canonicalize(path) {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let lock_path = get_lock_path(&canonical);
+    let port_str = match std::fs::read_to_string(&lock_path) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    if let Ok(port) = port_str.trim().parse::<u16>() {
+        let url = format!("http://127.0.0.1:{}/shutdown", port);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build();
+        if let Ok(client) = client {
+            let _ = client.get(&url).send();
+        }
+    }
+}
+
+/// Converts a `file://` URI to an absolute filesystem path.
+fn file_uri_to_path(uri: &str) -> Option<String> {
+    let path = uri.strip_prefix("file://")?;
+    Some(percent_decode(path))
+}
+
+/// Decodes percent-encoded bytes in a URI path component.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            ) {
+                out.push(((hi << 4) | lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

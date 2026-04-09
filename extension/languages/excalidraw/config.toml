@@ -1,0 +1,4 @@
+name = "Excalidraw"
+grammar = "json"
+path_suffixes = ["excalidraw"]
+language_servers = ["excalidraw-preview"]

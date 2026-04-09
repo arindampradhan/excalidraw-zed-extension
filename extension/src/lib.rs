@@ -4,8 +4,8 @@ use std::sync::RwLock;
 use zed_extension_api::{
     http_client::{self, HttpMethod, HttpRequestBuilder},
     process::Command as ProcessCommand,
-    Extension, Range, Result, SlashCommand, SlashCommandOutput, SlashCommandOutputSection,
-    Worktree,
+    Command, Extension, LanguageServerId, Range, Result, SlashCommand, SlashCommandOutput,
+    SlashCommandOutputSection, Worktree,
 };
 
 struct ExcalidrawPreviewExtension {
@@ -49,6 +49,29 @@ impl ExcalidrawPreviewExtension {
             Err(_) => false,
         }
     }
+
+    fn find_excalidraw_file(worktree: &Worktree) -> Option<PathBuf> {
+        let root = worktree.root_path();
+        let root_path = PathBuf::from(&root);
+
+        if let Ok(entries) = std::fs::read_dir(&root_path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Some(name) = path.file_name() {
+                        let name_str = name.to_string_lossy().to_string();
+                        if name_str.ends_with(".excalidraw")
+                            || name_str.ends_with(".excalidraw.svg")
+                            || name_str.ends_with(".excalidraw.png")
+                        {
+                            return Some(path);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
 }
 
 impl Extension for ExcalidrawPreviewExtension {
@@ -58,28 +81,50 @@ impl Extension for ExcalidrawPreviewExtension {
         }
     }
 
+    fn language_server_command(
+        &mut self,
+        language_server_id: &LanguageServerId,
+        worktree: &Worktree,
+    ) -> Result<Command> {
+        if language_server_id.as_ref() == "excalidraw-preview" {
+            let binary = worktree
+                .which("excalidraw-preview")
+                .ok_or("excalidraw-preview not found in PATH. Run: cargo install --path preview-binary")?;
+            Ok(Command {
+                command: binary,
+                args: vec!["--lsp".into()],
+                env: Default::default(),
+            })
+        } else {
+            Err(format!("unknown language server: {language_server_id}").into())
+        }
+    }
+
     fn run_slash_command(
         &self,
         command: SlashCommand,
         args: Vec<String>,
         worktree: Option<&Worktree>,
     ) -> Result<SlashCommandOutput> {
+        eprintln!("[DEBUG] run_slash_command called with args: {:?}", args);
         match command.name.as_str() {
             "preview-excalidraw" => {
                 let worktree = worktree.ok_or("No worktree available")?;
 
-                let file_arg = args
-                    .first()
-                    .ok_or("Usage: /preview-excalidraw <file.excalidraw>")?;
-
-                let file_path = {
+                let file_path = if let Some(file_arg) = args.first() {
                     let p = PathBuf::from(file_arg);
                     if p.is_absolute() {
                         p
                     } else {
                         PathBuf::from(worktree.root_path()).join(&p)
                     }
+                } else {
+                    Self::find_excalidraw_file(worktree).ok_or(
+                        "No .excalidraw file found in workspace. Provide a file path as argument.",
+                    )?
                 };
+
+                eprintln!("[DEBUG] Using file path: {:?}", file_path);
 
                 if !Self::is_valid_extension(&file_path) {
                     return Err(
@@ -109,10 +154,14 @@ impl Extension for ExcalidrawPreviewExtension {
 
                 let port = Self::port_for_path(&file_path);
 
-                let mut cmd = ProcessCommand::new("excalidraw-preview")
-                    .arg(&file_path_str)
-                    .arg("--port")
-                    .arg(port.to_string());
+                // zed_extension_api::process::Command only has `output()` (blocking).
+                // We background the binary via the shell so `output()` returns immediately.
+                let shell_cmd = format!(
+                    "nohup excalidraw-preview {} --port {} >/dev/null 2>&1 &",
+                    shlex_quote(&file_path_str),
+                    port
+                );
+                let mut cmd = ProcessCommand::new("sh").arg("-c").arg(&shell_cmd);
 
                 match cmd.output() {
                     Ok(_) => {
@@ -128,7 +177,7 @@ impl Extension for ExcalidrawPreviewExtension {
                             text: format!("Opened preview for {}", file_path.display()),
                         })
                     }
-                    Err(e) => Err(format!("Failed to start preview binary: {}. Make sure the excalidraw-preview binary is installed and in PATH.", e).into()),
+                    Err(e) => Err(format!("Failed to start preview binary: {}. Make sure 'excalidraw-preview' is installed and in PATH.", e).into()),
                 }
             }
             _ => Err(format!("Unknown command: {}", command.name).into()),
@@ -137,6 +186,11 @@ impl Extension for ExcalidrawPreviewExtension {
 }
 
 zed_extension_api::register_extension!(ExcalidrawPreviewExtension);
+
+/// Quotes a path for safe shell interpolation (single-quote wrapping).
+fn shlex_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 // These test only the pure helper functions that don't touch the Zed extension

@@ -6,9 +6,16 @@ authors = ["Arindam Pradhan"]
 description = "Preview .excalidraw files in a native window"
 repository = "https://github.com/arindampradhan/excalidraw-zed-extension"
 
-[capabilities]
-process = "excalidraw-preview"
+[language_servers.excalidraw-preview]
+name = "Excalidraw Preview"
+language = "Excalidraw"
+languages = []
+
+[[capabilities]]
+kind = "process:exec"
+command = "excalidraw-preview"
+args = ["*"]
 
 [slash_commands.preview-excalidraw]
 description = "Open live preview for the active .excalidraw file"
-requires_argument = true
+requires_argument = false

@@ -1,12 +1,15 @@
-import { useState, useEffect } from 'react';
-import { Excalidraw } from '@excalidraw/excalidraw';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { Excalidraw, serializeAsJSON } from '@excalidraw/excalidraw';
 import '@excalidraw/excalidraw/index.css';
 
 interface AppProps {
   initialData: ExcalidrawInitialDataState;
-  viewModeEnabled: boolean;
   theme: string;
   name: string;
+  contentType: string;
+  onApiReady: (api: ExcalidrawImperativeAPI) => void;
+  /** Called after a successful save so the SSE listener can suppress the echo. */
+  onSaved: (suppressUntil: number) => void;
 }
 
 function useOsTheme(preference: 'auto' | 'light' | 'dark'): 'light' | 'dark' {
@@ -17,7 +20,6 @@ function useOsTheme(preference: 'auto' | 'light' | 'dark'): 'light' | 'dark' {
 
   useEffect(() => {
     if (preference !== 'auto') return;
-
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
     const handler = (e: MediaQueryListEvent) => setTheme(e.matches ? 'dark' : 'light');
     mq.addEventListener('change', handler);
@@ -27,18 +29,52 @@ function useOsTheme(preference: 'auto' | 'light' | 'dark'): 'light' | 'dark' {
   return theme;
 }
 
-export default function App({ initialData, viewModeEnabled, theme, name }: AppProps) {
-  const [api, setApi] = useState<ExcalidrawImperativeAPI | null>(null);
+const SAVE_DEBOUNCE_MS = 600;
+
+export default function App({ initialData, theme, name, contentType, onApiReady, onSaved }: AppProps) {
   const resolvedTheme = useOsTheme(theme as 'auto' | 'light' | 'dark');
+  // Only JSON files support round-trip editing; SVG/PNG are view-only.
+  const editable = contentType === 'application/json';
+
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleChange = useCallback(
+    (
+      elements: readonly ExcalidrawElement[],
+      appState: AppState,
+      files: BinaryFiles,
+    ) => {
+      if (!editable) return;
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(async () => {
+        const json = serializeAsJSON(elements, appState, files, 'local');
+        try {
+          const res = await fetch('/data', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: json,
+          });
+          if (res.ok) {
+            // Suppress the SSE echo from the file-watcher for 2 seconds.
+            onSaved(Date.now() + 2000);
+          }
+        } catch {
+          // Silently ignore network errors (preview server may have shut down).
+        }
+      }, SAVE_DEBOUNCE_MS);
+    },
+    [editable, onSaved],
+  );
 
   return (
     <div style={{ height: '100%' }}>
       <Excalidraw
-        excalidrawAPI={setApi}
+        excalidrawAPI={onApiReady}
         initialData={{ ...initialData, scrollToContent: true }}
-        viewModeEnabled={viewModeEnabled}
+        viewModeEnabled={!editable}
         theme={resolvedTheme}
         name={name}
+        onChange={editable ? handleChange : undefined}
         UIOptions={{
           canvasActions: {
             loadScene: false,
