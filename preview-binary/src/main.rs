@@ -322,6 +322,39 @@ async fn serve_assets(
 // ── WebView ──────────────────────────────────────────────────────────────────
 
 /// Runs the native WebView window. Blocks until the window is closed.
+#[cfg(target_os = "linux")]
+fn run_webview(port: u16, _focus_rx: watch::Receiver<bool>) -> Result<(), Box<dyn std::error::Error>> {
+    use gtk::glib::Propagation;
+    use gtk::prelude::*;
+    use wry::WebViewBuilderExtUnix;
+
+    gtk::init().map_err(|e| format!("Failed to init GTK: {}", e))?;
+
+    let window = gtk::Window::new(gtk::WindowType::Toplevel);
+    window.set_title("Excalidraw Preview");
+    window.set_default_size(1200, 800);
+
+    let url = format!("http://127.0.0.1:{}", port);
+
+    let _webview = wry::WebViewBuilder::new_gtk(&window)
+        .with_url(&url)
+        .build()
+        .map_err(|e| format!("Failed to create WebView: {}", e))?;
+
+    window.show_all();
+
+    window.connect_delete_event(move |_, _| {
+        gtk::main_quit();
+        Propagation::Proceed
+    });
+
+    gtk::main();
+
+    Ok(())
+}
+
+/// Runs the native WebView window. Blocks until the window is closed.
+#[cfg(not(target_os = "linux"))]
 fn run_webview(port: u16, mut focus_rx: watch::Receiver<bool>) -> Result<(), Box<dyn std::error::Error>> {
     use tao::{
         event_loop::{ControlFlow, EventLoop},

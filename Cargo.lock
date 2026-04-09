@@ -655,6 +655,7 @@ dependencies = [
  "async-stream",
  "axum",
  "clap",
+ "gtk",
  "hyper",
  "mime_guess",
  "notify",
