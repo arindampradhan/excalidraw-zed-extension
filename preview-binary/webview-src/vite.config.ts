@@ -2,35 +2,120 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import fs from "fs";
 import path from "path";
+import type { IncomingMessage, ServerResponse } from "http";
 
-const TEST_FILE = path.resolve(__dirname, "../test.excalidraw");
+// Point DEV_FILE env var at any .excalidraw file you want to use while developing.
+// Falls back to preview-binary/test.excalidraw, which is auto-created if missing.
+const TEST_FILE = process.env.DEV_FILE
+  ? path.resolve(process.env.DEV_FILE)
+  : path.resolve(__dirname, "../test.excalidraw");
+
+// Ensure the test file exists so the dev server doesn't crash on first run.
+if (!fs.existsSync(TEST_FILE)) {
+  fs.writeFileSync(
+    TEST_FILE,
+    JSON.stringify({
+      type: "excalidraw",
+      version: 2,
+      source: "excalidraw-zed-preview",
+      elements: [],
+      appState: { gridSize: null, viewBackgroundColor: "#ffffff" },
+      files: {},
+    }),
+  );
+  console.info(`[mock-api] Created empty test file at ${TEST_FILE}`);
+}
+
+// SSE: keep a list of active response streams and broadcast to them.
+const sseClients = new Set<ServerResponse>();
+
+function broadcastReload() {
+  for (const res of sseClients) {
+    try {
+      res.write("data: reload\n\n");
+    } catch {
+      sseClients.delete(res);
+    }
+  }
+}
+
+// Watch the test file for external changes (e.g. you save it in Zed) and
+// broadcast an SSE reload event so the webview's EventSource picks it up.
+let fsWatchDebounce: ReturnType<typeof setTimeout> | null = null;
+fs.watch(TEST_FILE, () => {
+  if (fsWatchDebounce) clearTimeout(fsWatchDebounce);
+  fsWatchDebounce = setTimeout(broadcastReload, 80);
+});
 
 export default defineConfig({
   plugins: [
     {
       name: "mock-api",
       configureServer(server) {
-        server.middlewares.use("/config", (_, res) => {
-          res.setHeader("Content-Type", "application/json");
-          res.end(
-            JSON.stringify({
-              contentType: "application/json",
-              name: "test.excalidraw",
-              theme: "auto",
-            }),
-          );
-        });
-        server.middlewares.use("/data", (_, res) => {
-          const content = fs.readFileSync(TEST_FILE, "utf-8");
-          res.setHeader("Content-Type", "application/json");
-          res.end(content);
-        });
-        server.middlewares.use("/events", (_, res) => {
-          res.setHeader("Content-Type", "text/event-stream");
-          res.flushHeaders();
-          res.write(":\n\n");
-          res.on("close", () => res.destroy());
-        });
+        // GET /config
+        server.middlewares.use(
+          "/config",
+          (_req: IncomingMessage, res: ServerResponse) => {
+            res.setHeader("Content-Type", "application/json");
+            res.end(
+              JSON.stringify({
+                contentType: "application/json",
+                name: path.basename(TEST_FILE),
+                theme: "auto",
+              }),
+            );
+          },
+        );
+
+        // GET + POST /data
+        server.middlewares.use(
+          "/data",
+          (req: IncomingMessage, res: ServerResponse) => {
+            if (req.method === "POST") {
+              // Write-back from App.tsx's onChange → save to TEST_FILE.
+              const chunks: Buffer[] = [];
+              req.on("data", (chunk: Buffer) => chunks.push(chunk));
+              req.on("end", () => {
+                const body = Buffer.concat(chunks);
+                fs.writeFile(TEST_FILE, body, (err) => {
+                  if (err) {
+                    res.writeHead(500);
+                    res.end("write failed");
+                  } else {
+                    // Don't broadcast SSE here — App.tsx suppresses the echo itself.
+                    res.writeHead(200);
+                    res.end("ok");
+                  }
+                });
+              });
+              return;
+            }
+            // GET
+            try {
+              const content = fs.readFileSync(TEST_FILE);
+              res.setHeader("Content-Type", "application/json");
+              res.end(content);
+            } catch (e) {
+              res.writeHead(500);
+              res.end(`read failed: ${e}`);
+            }
+          },
+        );
+
+        // GET /events — real SSE stream that fires when the file changes.
+        server.middlewares.use(
+          "/events",
+          (_req: IncomingMessage, res: ServerResponse) => {
+            res.setHeader("Content-Type", "text/event-stream");
+            res.setHeader("Cache-Control", "no-cache");
+            res.setHeader("Connection", "keep-alive");
+            res.flushHeaders();
+            // Keep-alive comment so the browser doesn't time out.
+            res.write(":\n\n");
+            sseClients.add(res);
+            res.on("close", () => sseClients.delete(res));
+          },
+        );
       },
     },
     react(),

@@ -390,16 +390,16 @@ rustup target add wasm32-wasip1
 cd preview-binary/webview-src && npm install && npm run build && cd ../..
 
 # 2. Build companion binary (native)
-cargo build -p preview-binary --release
+cargo build -p excalidraw-preview-binary --release
 
 # 3. Build Zed extension (WASM)
-cargo build -p extension --release --target wasm32-wasip1
+cargo build -p excalidraw-preview --release --target wasm32-wasip1
 
 # 4a. Run binary directly for testing
 ./target/release/excalidraw-preview ./path/to/file.excalidraw --debug
 
 # 4b. Install extension into Zed (dev mode)
-zed --install-dev-extension ./extension
+# In Zed: open the command palette → "zed: install dev extension" → select the ./extension directory
 ```
 
 ---

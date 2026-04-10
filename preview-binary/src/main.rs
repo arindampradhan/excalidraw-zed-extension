@@ -53,6 +53,18 @@ fn main() -> Result<()> {
             .init();
     }
 
+    // --dev / --dev-server: open the WebView on the Vite dev server instead of the
+    // embedded assets.  Run `npm run dev` in webview-src first.
+    if let Some(dev_url) = args.dev_server.or_else(|| args.dev.then(|| "http://localhost:5173".to_string())) {
+        eprintln!("[dev] Opening WebView at {dev_url}");
+        eprintln!("[dev] Make sure `npm run dev` is running in preview-binary/webview-src/");
+        let (_focus_tx, focus_rx) = watch::channel(false);
+        if let Err(e) = run_webview_url(&dev_url, focus_rx) {
+            eprintln!("WebView error: {e}");
+        }
+        return Ok(());
+    }
+
     let file = args
         .file
         .ok_or_else(|| anyhow::anyhow!("Usage: excalidraw-preview <file> [--port <port>] [--debug]\n       excalidraw-preview --lsp"))?;
@@ -348,10 +360,16 @@ async fn serve_assets(axum::extract::Path(path): axum::extract::Path<String>) ->
 
 // ── WebView ──────────────────────────────────────────────────────────────────
 
-/// Runs the native WebView window. Blocks until the window is closed.
+/// Opens the WebView at the given URL. Blocks until the window is closed.
+fn run_webview(port: u16, focus_rx: watch::Receiver<bool>) -> Result<(), Box<dyn std::error::Error>> {
+    run_webview_url(&format!("http://127.0.0.1:{}", port), focus_rx)
+}
+
+/// Opens the WebView at an arbitrary URL. Used both for the normal server and
+/// for `--dev` / `--dev-server` mode (pointing at the Vite dev server).
 #[cfg(target_os = "linux")]
-fn run_webview(
-    port: u16,
+fn run_webview_url(
+    url: &str,
     _focus_rx: watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use gtk::glib::Propagation;
@@ -364,10 +382,8 @@ fn run_webview(
     window.set_title("Excalidraw Preview");
     window.set_default_size(1200, 800);
 
-    let url = format!("http://127.0.0.1:{}", port);
-
     let _webview = wry::WebViewBuilder::new_gtk(&window)
-        .with_url(&url)
+        .with_url(url)
         .build()
         .map_err(|e| format!("Failed to create WebView: {}", e))?;
 
@@ -383,10 +399,11 @@ fn run_webview(
     Ok(())
 }
 
-/// Runs the native WebView window. Blocks until the window is closed.
+/// Opens the WebView at an arbitrary URL. Used both for the normal server and
+/// for `--dev` / `--dev-server` mode (pointing at the Vite dev server).
 #[cfg(not(target_os = "linux"))]
-fn run_webview(
-    port: u16,
+fn run_webview_url(
+    url: &str,
     mut focus_rx: watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use tao::{
@@ -402,10 +419,8 @@ fn run_webview(
         .build(&event_loop)
         .map_err(|e| format!("Failed to create window: {}", e))?;
 
-    let url = format!("http://127.0.0.1:{}", port);
-
     let _webview = WebViewBuilder::new(&window)
-        .with_url(&url)
+        .with_url(url)
         .build()
         .map_err(|e| format!("Failed to create WebView: {}", e))?;
 
@@ -448,6 +463,15 @@ struct CliArgs {
     /// Zed will call this automatically when a .excalidraw file is opened.
     #[arg(long)]
     lsp: bool,
+    /// Dev shorthand: open the WebView at http://localhost:5173 (the Vite dev server).
+    /// Run `npm run dev` in preview-binary/webview-src/ first.
+    #[arg(long)]
+    dev: bool,
+    /// Open the WebView at a custom URL instead of the embedded server.
+    /// Useful for pointing at a running Vite dev server on a non-default port.
+    /// e.g. --dev-server http://localhost:5173
+    #[arg(long, value_name = "URL")]
+    dev_server: Option<String>,
 }
 
 // ── LSP server ───────────────────────────────────────────────────────────────
