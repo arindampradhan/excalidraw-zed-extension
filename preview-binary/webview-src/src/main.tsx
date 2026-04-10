@@ -38,6 +38,15 @@ async function main() {
       throw new Error(`Failed to fetch config: ${configRes.status}`);
     const config: Config = await configRes.json();
 
+    // Resolve "auto" to a concrete value once, here, before React mounts.
+    // This prevents useOsTheme from re-calling matchMedia on HMR remounts,
+    // which returns false in WebKitGTK (no system dark-mode wiring).
+    if (config.theme === "auto") {
+      config.theme = window.matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark"
+        : "light";
+    }
+
     const dataRes = await fetch("/data");
     if (!dataRes.ok) throw new Error(`Failed to fetch data: ${dataRes.status}`);
     const bytes = await dataRes.arrayBuffer();

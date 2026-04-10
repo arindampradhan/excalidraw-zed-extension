@@ -14,7 +14,21 @@
       "Bash(sudo cp:*)",
       "Bash(python3 -m json.tool ~/.local/share/zed/extensions/index.json)",
       "Bash(python3 -c ':*)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(node --input-type=module)",
+      "Bash(DEV_FILE=../test.excalidraw npm run dev)",
+      "Bash(./target/debug/excalidraw-preview:*)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(excalidraw-preview --version)",
+      "Bash(make help:*)",
+      "Bash(make build:*)",
+      "Bash(make ui:*)",
+      "Bash(make symlink:*)",
+      "Bash(make build-debug:*)",
+      "Bash(timeout 3 gsettings get org.gnome.desktop.interface color-scheme)",
+      "Bash(pkill -f \"vite build\")",
+      "Bash(pkill -f \"npm run build\")",
+      "Bash(kill 20710 20737 27722 27798 29836 29864)"
     ]
   }
 }

@@ -53,24 +53,37 @@ Re-running the command focuses the existing window instead of opening a new one.
 - **Linux**: `libwebkit2gtk-4.1-dev` or `libwebkit2gtk-4.0-dev` (e.g., `sudo apt install libwebkit2gtk-4.1-dev`)
 - **Windows**: WebView2 (built-in on Win11; runtime bootstrapper needed on older Win10)
 
-### Build Steps
+```bash
+# one-time: install WASM target
+rustup target add wasm32-wasip1
+```
+
+### Using Make (recommended)
 
 ```bash
-# 1. Install the WASM target for Zed extensions
-rustup target add wasm32-wasip1
+make              # build UI + release binary (most common)
+make release      # UI + binary + extension WASM
+make symlink      # one-time: ~/.local/bin/excalidraw-preview → target/release
+```
 
-# 2. Build the webview React app (must run before cargo build)
+### Manual steps
+
+```bash
+# 1. Build the webview React app
 cd preview-binary/webview-src && npm install && npm run build && cd ../..
 
-# 3. Build companion binary (native)
+# 2. Build companion binary
 cargo build -p excalidraw-preview-binary --release
 
-# 4. Build Zed extension (WASM)
+# 3. Build Zed extension WASM
 cargo build -p excalidraw-preview --release --target wasm32-wasip1
+```
 
-# 5. Verify the build succeeded
-ls -la target/release/excalidraw-preview
-ls -la target/wasm32-wasip1/release/excalidraw_preview.wasm
+### Install binary to PATH
+
+```bash
+make symlink   # symlinks ~/.local/bin/excalidraw-preview → target/release
+               # so cargo build automatically updates what Zed sees
 ```
 
 ## Run Without Zed
@@ -83,8 +96,19 @@ ls -la target/wasm32-wasip1/release/excalidraw_preview.wasm
 
 ## Install Dev Extension in Zed
 
+In Zed: open the command palette → **"zed: install dev extension"** → select the `./extension` directory.
+
+## Development
+
 ```bash
-zed --install-dev-extension ./extension
+make dev                              # Vite dev server + WebView window (uses preview-binary/test.excalidraw)
+make dev DEV_FILE=path/to/file.excalidraw   # point at a specific file
+```
+
+Edit `App.tsx` (or any file in `preview-binary/webview-src/src/`) — Vite HMR updates the WebView instantly, no Rust rebuild needed. When done:
+
+```bash
+make ui && make build   # bake changes into the release binary
 ```
 
 ## Architecture
@@ -126,7 +150,10 @@ fetch('/config') → contentType, theme
 fetch('/data')   → ArrayBuffer
 loadFromBlob(new Blob([bytes], { type: contentType }), null, null)
   → ExcalidrawInitialDataState { elements, appState, files }
-<Excalidraw initialData={...} viewModeEnabled={true} scrollToContent={true} />
+<Excalidraw initialData={...} scrollToContent={true} />
+
+onChange (debounced 600 ms) / Ctrl+S
+  → POST /data  → written to disk
 
 EventSource('/events')
   on 'reload' → re-fetch /data → loadFromBlob → excalidrawAPI.updateScene()
@@ -161,7 +188,6 @@ EventSource('/events')
 
 ## Future (v2+)
 
-- Bidirectional editing (write back to file)
 - Multi-file tabs
 - Remember window size and position
 - `.excalidrawlib` workspace library panel

@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import fs from "fs";
 import path from "path";
+import { execSync } from "child_process";
 import type { IncomingMessage, ServerResponse } from "http";
 
 // Point DEV_FILE env var at any .excalidraw file you want to use while developing.
@@ -9,6 +10,33 @@ import type { IncomingMessage, ServerResponse } from "http";
 const TEST_FILE = process.env.DEV_FILE
   ? path.resolve(process.env.DEV_FILE)
   : path.resolve(__dirname, "../test.excalidraw");
+
+// Detect the system color scheme on the host so the mock returns the same
+// theme the real Rust server would return, avoiding a light/dark flash.
+function detectSystemTheme(): "dark" | "light" {
+  // Explicit override via env var takes priority.
+  const env = process.env.THEME;
+  if (env === "dark" || env === "light") return env;
+  try {
+    // GNOME / GTK (covers most Linux desktops)
+    const scheme = execSync(
+      "gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null",
+      { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+    );
+    if (scheme.includes("dark")) return "dark";
+  } catch { /* not GNOME or gsettings unavailable */ }
+  try {
+    // macOS
+    const style = execSync("defaults read -g AppleInterfaceStyle 2>/dev/null", {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (style === "Dark") return "dark";
+  } catch { /* not macOS or not in dark mode */ }
+  return "light";
+}
+
+const systemTheme = detectSystemTheme();
 
 // Ensure the test file exists so the dev server doesn't crash on first run.
 if (!fs.existsSync(TEST_FILE)) {
@@ -61,7 +89,7 @@ export default defineConfig({
               JSON.stringify({
                 contentType: "application/json",
                 name: path.basename(TEST_FILE),
-                theme: "auto",
+                theme: systemTheme,
               }),
             );
           },

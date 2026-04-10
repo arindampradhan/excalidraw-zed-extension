@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Excalidraw,
+  MainMenu,
   serializeAsJSON,
   exportToSvg,
   exportToBlob,
@@ -49,14 +50,10 @@ export default function App({
   onSaved,
 }: AppProps) {
   const resolvedTheme = useOsTheme(theme as "auto" | "light" | "dark");
-
+  const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Track the element hash of the last-saved state so we only POST when
-  // elements actually change (not on viewport pan / zoom / selection).
   const prevVersionRef = useRef<number>(-1);
 
-  // Seed prevVersionRef from the initial scene so the first onChange
-  // (which Excalidraw fires immediately on mount) doesn't trigger a spurious save.
   useEffect(() => {
     if (initialData?.elements) {
       prevVersionRef.current = hashElementsVersion(
@@ -65,69 +62,93 @@ export default function App({
     }
   }, []);
 
+  /** Serializes the current scene and POSTs it to /data. */
+  const doSave = useCallback(async () => {
+    const api = apiRef.current;
+    if (!api) return;
+
+    const elements = api.getSceneElements();
+    const appState = api.getAppState();
+    const files = api.getFiles();
+
+    try {
+      let body: BodyInit;
+      let contentTypeHeader: string;
+
+      if (contentType === "image/svg+xml") {
+        const nonDeleted = elements.filter((e) => !e.isDeleted);
+        const svg = await exportToSvg({ elements: nonDeleted, appState, files });
+        body = svg.outerHTML;
+        contentTypeHeader = "image/svg+xml";
+      } else if (contentType === "image/png") {
+        const nonDeleted = elements.filter((e) => !e.isDeleted);
+        const blob = await exportToBlob({
+          elements: nonDeleted,
+          appState,
+          files,
+          getDimensions(width: number, height: number) {
+            const scale =
+              (appState as { exportScale?: number }).exportScale ?? 2;
+            return { width: width * scale, height: height * scale, scale };
+          },
+        });
+        if (!blob) return;
+        body = await blob.arrayBuffer();
+        contentTypeHeader = "image/png";
+      } else {
+        body = serializeAsJSON(elements, appState, files, "local");
+        contentTypeHeader = "application/json";
+      }
+
+      const res = await fetch("/data", {
+        method: "POST",
+        headers: { "Content-Type": contentTypeHeader },
+        body,
+      });
+      if (res.ok) {
+        onSaved(Date.now() + 2000);
+      }
+    } catch {
+      // Silently ignore network errors (preview server may have shut down).
+    }
+  }, [contentType, onSaved]);
+
+  /** Ctrl+S / Cmd+S — cancel the debounce and save immediately. */
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+        e.preventDefault();
+        if (saveTimer.current) {
+          clearTimeout(saveTimer.current);
+          saveTimer.current = null;
+        }
+        doSave();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [doSave]);
+
+  /** onChange — debounced auto-save triggered by element changes. */
   const handleChange = useCallback(
-    (
-      elements: readonly ExcalidrawElement[],
-      appState: AppState,
-      files: BinaryFiles,
-    ) => {
-      // Only proceed when elements actually changed — skip viewport/selection-only events.
+    (elements: readonly ExcalidrawElement[]) => {
       const currentVersion = hashElementsVersion(elements);
       if (currentVersion === prevVersionRef.current) return;
       prevVersionRef.current = currentVersion;
 
       if (saveTimer.current) clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(async () => {
-        try {
-          let body: BodyInit;
-          let contentTypeHeader: string;
-
-          if (contentType === "image/svg+xml") {
-            const nonDeleted = elements.filter((e) => !e.isDeleted);
-            const svg = await exportToSvg({ elements: nonDeleted, appState, files });
-            body = svg.outerHTML;
-            contentTypeHeader = "image/svg+xml";
-          } else if (contentType === "image/png") {
-            const nonDeleted = elements.filter((e) => !e.isDeleted);
-            const blob = await exportToBlob({
-              elements: nonDeleted,
-              appState,
-              files,
-              getDimensions(width: number, height: number) {
-                const scale = (appState as { exportScale?: number }).exportScale ?? 2;
-                return { width: width * scale, height: height * scale, scale };
-              },
-            });
-            if (!blob) return;
-            body = await blob.arrayBuffer();
-            contentTypeHeader = "image/png";
-          } else {
-            // application/json — default Excalidraw format
-            body = serializeAsJSON(elements, appState, files, "local");
-            contentTypeHeader = "application/json";
-          }
-
-          const res = await fetch("/data", {
-            method: "POST",
-            headers: { "Content-Type": contentTypeHeader },
-            body,
-          });
-          if (res.ok) {
-            // Suppress the SSE echo from the file-watcher for 2 seconds.
-            onSaved(Date.now() + 2000);
-          }
-        } catch {
-          // Silently ignore network errors (preview server may have shut down).
-        }
-      }, SAVE_DEBOUNCE_MS);
+      saveTimer.current = setTimeout(doSave, SAVE_DEBOUNCE_MS);
     },
-    [contentType, onSaved],
+    [doSave],
   );
 
   return (
     <div style={{ height: "100%" }}>
       <Excalidraw
-        excalidrawAPI={onApiReady}
+        excalidrawAPI={(api) => {
+          apiRef.current = api;
+          onApiReady(api);
+        }}
         initialData={{ ...initialData, scrollToContent: true }}
         theme={resolvedTheme}
         name={name}
@@ -139,7 +160,19 @@ export default function App({
             export: false,
           },
         }}
-      />
+      >
+        <MainMenu>
+          <MainMenu.Item onSelect={doSave} shortcut="Ctrl+S">
+            Save to file
+          </MainMenu.Item>
+          <MainMenu.Separator />
+          <MainMenu.DefaultItems.ClearCanvas />
+          <MainMenu.DefaultItems.ChangeCanvasBackground />
+          <MainMenu.DefaultItems.ToggleTheme />
+          <MainMenu.Separator />
+          <MainMenu.DefaultItems.Help />
+        </MainMenu>
+      </Excalidraw>
     </div>
   );
 }

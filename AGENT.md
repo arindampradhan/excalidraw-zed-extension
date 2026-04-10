@@ -383,24 +383,46 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ## Build & Run
 
 ```bash
-# 0. One-time: install WASM target
+# 0. One-time: install WASM target + symlink binary to PATH
 rustup target add wasm32-wasip1
+make symlink   # ~/.local/bin/excalidraw-preview → target/release (run once)
 
-# 1. Build webview (must run before cargo build if assets/ is not committed)
-cd preview-binary/webview-src && npm install && npm run build && cd ../..
+# 1. Normal build (UI + release binary)
+make
 
-# 2. Build companion binary (native)
-cargo build -p excalidraw-preview-binary --release
+# 2. Full release (UI + binary + extension WASM)
+make release
 
-# 3. Build Zed extension (WASM)
-cargo build -p excalidraw-preview --release --target wasm32-wasip1
-
-# 4a. Run binary directly for testing
+# 3. Run binary directly for testing
 ./target/release/excalidraw-preview ./path/to/file.excalidraw --debug
 
-# 4b. Install extension into Zed (dev mode)
+# 4. Install extension into Zed (dev mode)
 # In Zed: open the command palette → "zed: install dev extension" → select the ./extension directory
 ```
+
+### Makefile targets
+
+| Target | Description |
+|---|---|
+| `make` | Build UI + release binary |
+| `make build` | Release binary only (no UI rebuild) |
+| `make build-debug` | Debug binary |
+| `make ui` | Vite build only (`webview-src/` → `assets/`) |
+| `make release` | UI + binary + extension WASM |
+| `make symlink` | One-time: symlink `~/.local/bin/excalidraw-preview` → `target/release` |
+| `make dev` | Debug build + Vite dev server + WebView window in parallel |
+| `make dev-ui` | Vite dev server only |
+| `make dev-window` | WebView pointed at Vite dev server |
+| `make clean` | `cargo clean` (keeps `assets/`) |
+
+### Dev workflow
+
+```bash
+make dev DEV_FILE=docs/examples/software-development-lifecycle.excalidraw
+```
+
+Vite HMR updates the WebView on every `App.tsx` save — no Rust rebuild needed during UI development.
+After UI changes are done: `make ui && make build` to bake them into the release binary.
 
 ---
 
