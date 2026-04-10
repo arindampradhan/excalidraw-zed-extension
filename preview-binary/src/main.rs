@@ -23,6 +23,7 @@ struct AppState {
     lock_path: PathBuf,
     content_type: String,
     file_name: String,
+    auto_save: bool,
     broadcast_tx: broadcast::Sender<()>,
     /// Sends `true` to signal the webview window to focus.
     focus_tx: Arc<watch::Sender<bool>>,
@@ -33,10 +34,12 @@ struct AppState {
 struct Assets;
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ConfigResponse {
     content_type: String,
     name: String,
     theme: String,
+    auto_save: bool,
 }
 
 /// Entry point. Keeps the main thread free for the native event loop (required on macOS).
@@ -111,6 +114,7 @@ fn main() -> Result<()> {
         lock_path: lock_path.clone(),
         content_type,
         file_name,
+        auto_save: args.auto_save,
         broadcast_tx: broadcast_tx.clone(),
         focus_tx: focus_tx.clone(),
     });
@@ -275,6 +279,7 @@ async fn serve_config(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         content_type: state.content_type.clone(),
         name: state.file_name.clone(),
         theme: "auto".to_string(),
+        auto_save: state.auto_save,
     };
     axum::Json(config)
 }
@@ -472,6 +477,10 @@ struct CliArgs {
     /// e.g. --dev-server http://localhost:5173
     #[arg(long, value_name = "URL")]
     dev_server: Option<String>,
+    /// Automatically save the diagram back to disk after every change (debounced 600 ms).
+    /// Default: off — use Ctrl+S to save manually.
+    #[arg(long)]
+    auto_save: bool,
 }
 
 // ── LSP server ───────────────────────────────────────────────────────────────
@@ -695,6 +704,7 @@ mod tests {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string(),
+            auto_save: false,
             broadcast_tx,
             focus_tx: Arc::new(focus_tx),
         })
@@ -812,8 +822,9 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["content_type"], "application/json");
+        assert_eq!(json["contentType"], "application/json");
         assert_eq!(json["theme"], "auto");
+        assert_eq!(json["autoSave"], false);
     }
 
     #[tokio::test]
@@ -835,7 +846,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["content_type"], "image/svg+xml");
+        assert_eq!(json["contentType"], "image/svg+xml");
     }
 
     #[tokio::test]
@@ -893,8 +904,10 @@ mod tests {
 
         let state = Arc::new(AppState {
             file_path: tmp.path().to_path_buf(),
+            lock_path: std::env::temp_dir().join("excalidraw-test-focus.lock"),
             content_type: "application/json".to_string(),
             file_name: "test".to_string(),
+            auto_save: false,
             broadcast_tx,
             focus_tx,
         });

@@ -33,25 +33,19 @@ excalidraw-zed-extension/
 ├── preview-binary/                 ← companion native binary
 │   ├── Cargo.toml
 │   ├── src/
-│   │   ├── main.rs                 ← CLI entry, arg parsing, orchestration
-│   │   ├── server.rs               ← axum HTTP server + SSE + all routes
-│   │   ├── watcher.rs              ← notify file watcher, 80 ms debounce
-│   │   ├── webview.rs              ← wry WebView window lifecycle
-│   │   └── assets.rs               ← include_bytes! embed + serve assets/
+│   │   └── main.rs                 ← CLI entry, all routes, file watcher, WebView (monolith)
 │   ├── webview-src/                ← React + Vite source (npm project)
 │   │   ├── package.json            ← @excalidraw/excalidraw ^0.18, react ^18, vite
-│   │   ├── vite.config.ts          ← outDir: "../assets", base: "/assets/"
+│   │   ├── vite.config.ts          ← prod: assets only; dev: mock API plugin for any file
 │   │   ├── index.html
 │   │   └── src/
 │   │       ├── main.tsx            ← fetch /config + /data → loadFromBlob → render, SSE
-│   │       ├── App.tsx             ← <Excalidraw> view-only wrapper
-│   │       ├── useOsTheme.ts       ← prefers-color-scheme → "light"|"dark"
-│   │       └── styles.css
+│   │       └── App.tsx             ← <Excalidraw> editor, Ctrl+S / auto-save, SSE reload
 │   └── assets/                     ← Vite build output; committed; embedded at compile time
 │       ├── index.html              ← served at GET /
 │       └── assets/
-│           ├── main-[hash].js      ← React + Excalidraw bundle
-│           ├── main-[hash].css
+│           ├── index-[hash].js     ← React + Excalidraw bundle
+│           ├── index-[hash].css
 │           └── *.woff2, *.wasm     ← Excalidraw runtime assets (GET /assets/*)
 │
 ├── refs/
@@ -122,197 +116,141 @@ Use `zed_extension_api::process::Command` and `zed::http_client_get` only.
 
 **Target:** native (x86_64/aarch64, macOS/Linux/Windows)
 
-### main.rs
+**Note:** all server, watcher, webview, and asset logic lives in a single `main.rs` (monolith); the AGENT.md originally described separate files that were never split out.
+
+### CLI
 
 ```
-CLI: excalidraw-preview <file-path> [--port <port>] [--debug]
+excalidraw-preview <file-path> [--port <port>] [--auto-save] [--debug]
+excalidraw-preview --lsp
+excalidraw-preview --dev
+excalidraw-preview --dev-server <url>
 ```
 
-Startup sequence:
+### Startup sequence
+
 1. Parse args with `clap`.
-2. Detect file format from extension → `ContentType` enum (`Json` | `Svg` | `Png`).
-3. Check lock file `$TMPDIR/excalidraw-{sha256(canonical_path)}.lock`.
-   - If exists and port is live (`GET /ping` succeeds) → send `GET /focus` and exit.
-   - If exists but stale → remove and continue.
-4. Bind axum server on ephemeral port (or `--port`).
-5. Write port to lock file as plain text.
-6. Spawn file watcher thread (see `watcher.rs`).
-7. Open WebView window pointing to `http://127.0.0.1:{port}` (see `webview.rs`).
-8. Run event loop — blocks until window closes.
-9. On exit: remove lock file, shut down server.
+2. If `--lsp`: run JSON-RPC LSP server loop (Zed language server integration).
+3. If `--dev` / `--dev-server`: open WebView at the Vite dev server URL directly.
+4. Otherwise: detect file format from extension → MIME type string.
+5. Check lock file `$TMPDIR/excalidraw-{sha256(canonical_path)}.lock`.
+   - If live (`GET /ping` succeeds) → send `GET /focus` and exit.
+   - If stale → remove and continue.
+6. Bind axum server on ephemeral port (or `--port`).
+7. Write port to lock file.
+8. Spawn file watcher thread (notify v6, 80 ms debounce → broadcast channel).
+9. Open WebView window at `http://127.0.0.1:{port}`.
+10. On window close: remove lock file, shut down server.
 
-### server.rs
+### HTTP Routes
 
-All routes served by axum (tokio):
-
-| Route | Handler |
+| Route | Description |
 |---|---|
-| `GET /` | serve embedded `index.html` |
-| `GET /config` | return `{ contentType, name, theme: "auto" }` as JSON |
-| `GET /data` | read file from disk, return bytes with correct `Content-Type` |
-| `GET /events` | SSE stream; subscribe to broadcast channel; emit `data: reload\n\n` |
-| `GET /focus` | signal webview window to call `window.set_focus()` |
-| `GET /ping` | return 200 OK (liveness probe) |
-| `GET /assets/*` | serve embedded assets from `assets.rs` |
+| `GET /` | Serve embedded `index.html` |
+| `GET /config` | JSON: `{ contentType, name, theme, autoSave }` |
+| `GET /data` | Read file from disk, return bytes with correct `Content-Type` |
+| `POST /data` | Write request body back to disk (save from WebView) |
+| `GET /events` | SSE stream; emit `data: reload` on file change |
+| `GET /focus` | Signal WebView window to call `window.set_focus()` |
+| `GET /ping` | 200 OK liveness probe |
+| `GET /shutdown` | Graceful shutdown (called on `textDocument/didClose`) |
+| `GET /assets/*` | Serve embedded assets (rust-embed, MIME via mime_guess) |
 
-SSE channel: `tokio::sync::broadcast::channel::<()>(16)`. Watcher sends `()` on file change; SSE handler subscribes and streams.
-
-### watcher.rs
-
-- Use `notify` v6 `RecommendedWatcher`.
-- Watch target file for `EventKind::Modify(_)` and `EventKind::Create(_)`.
-- Debounce: 80 ms (drop duplicate events within window).
-- On trigger: `broadcast_tx.send(())`.
-
-### webview.rs
+### AppState fields
 
 ```rust
-let event_loop = EventLoop::new();
-let window = WindowBuilder::new()
-    .with_title("Excalidraw Preview")
-    .with_inner_size(LogicalSize::new(1200, 800))
-    .build(&event_loop)?;
-let webview = WebViewBuilder::new(&window)
-    .with_url(&format!("http://127.0.0.1:{}", port))
-    .build()?;
-event_loop.run(move |event, _, control_flow| {
-    match event {
-        Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
-            *control_flow = ControlFlow::Exit;
-        }
-        _ => *control_flow = ControlFlow::Wait,
-    }
-});
+struct AppState {
+    file_path: PathBuf,
+    lock_path: PathBuf,
+    content_type: String,   // MIME string
+    file_name: String,
+    auto_save: bool,        // forwarded to /config → frontend
+    broadcast_tx: broadcast::Sender<()>,
+    focus_tx: Arc<watch::Sender<bool>>,
+}
 ```
 
-Focus signal: a `tokio::sync::watch` channel; `/focus` route sends to it; the event loop polls it and calls `window.set_focus()`.
+### ConfigResponse (camelCase via serde)
 
-### assets.rs
+```json
+{ "contentType": "application/json", "name": "diagram", "theme": "auto", "autoSave": false }
+```
 
-Embeds the entire `assets/` directory at compile time. Use `rust-embed` crate (or manual `include_bytes!` per file) to serve with correct `Content-Type` headers keyed by file extension.
+### LSP server
+
+Implements a minimal JSON-RPC LSP so Zed can invoke the binary as a language server for `.excalidraw` files:
+- `textDocument/didOpen` → spawns `excalidraw-preview <path>` as a detached process
+- `textDocument/didClose` → sends `GET /shutdown` to the running instance
+- `initialize` / `shutdown` / `exit` handled normally
 
 ---
 
 ## Component 3 — Web UI (`preview-binary/webview-src/`)
 
-Reference: `refs/excalidraw-vscode/webview/` — adapt, don't copy verbatim (no VS Code APIs).
+### vite.config.ts
 
-### Key differences from excalidraw-vscode
+Uses Vite's function-form config to split prod vs dev cleanly:
 
-| excalidraw-vscode | This project |
-|---|---|
-| Config via Base64 HTML attribute | Config via `GET /config` HTTP endpoint |
-| File content via same Base64 attribute | File content via `GET /data` HTTP endpoint |
-| Live updates via VS Code `postMessage` | Live updates via SSE `EventSource('/events')` |
-| `vscode.postMessage` write-back | Read-only, no write-back (v1) |
-| Asset path via `asWebviewUri` | Asset path hardcoded to `/assets/` |
+- **Production build** (`vite build`): only the React plugin runs. No file watchers, no mock server, no `execSync`. Build exits immediately.
+- **Dev server** (`vite dev`): a `mockApiPlugin()` is activated that implements the full API (`/config`, `/data`, `/events`) using the local filesystem, mirroring the Rust server.
+
+### Dev server — any file via `?file=` param
+
+In dev mode, open any excalidraw file without restarting the server:
+
+```
+http://localhost:5173?file=/absolute/path/to/diagram.excalidraw
+http://localhost:5173?file=/absolute/path/to/other.excalidraw.svg
+```
+
+Multiple tabs work independently — each `?file=` gets its own SSE client set and `fs.watch` handle. Defaults to `DEV_FILE` env var or `preview-binary/test.excalidraw` if no param is given.
 
 ### main.tsx — startup sequence
 
 ```ts
-// 1. Fetch config
-const config = await fetch('/config').then(r => r.json());
-// config: { contentType: string, name: string, theme: "auto" }
+// ?file= query param forwarded to all API calls in dev; ignored (absent) in prod.
+const fileParam = new URLSearchParams(window.location.search).get("file");
+function apiUrl(path) { return fileParam ? `${path}?file=${encodeURIComponent(fileParam)}` : path; }
 
-// 2. Fetch raw file bytes
-const bytes = await fetch('/data').then(r => r.arrayBuffer());
+const config = await fetch(apiUrl('/config')).then(r => r.json());
+// config: { contentType, name, theme, autoSave }
 
-// 3. Load with format fallback chain (same logic as refs/excalidraw-vscode/webview/src/main.tsx)
-let initialData: ExcalidrawInitialDataState;
-const types = reorderFallbacks(config.contentType);  // try declared type first
-for (const type of types) {
-  try {
-    initialData = await loadFromBlob(
-      new Blob([bytes], { type }),
-      null, null
-    );
-    break;
-  } catch { /* try next */ }
-}
-if (!initialData) { showError("Failed to load file"); return; }
+// Resolve "auto" theme once before React mounts (avoids matchMedia issues in WebKitGTK).
+if (config.theme === "auto") config.theme = window.matchMedia(...).matches ? "dark" : "light";
 
-// 4. Render
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <App initialData={initialData} config={config} />
-);
+const bytes = await fetch(apiUrl('/data')).then(r => r.arrayBuffer());
 
-// 5. SSE live reload
-const es = new EventSource('/events');
+// Format fallback chain: try declared type first, then the other two.
+for (const type of reorderFallbacks(config.contentType)) { ... }
+
+// SSE live reload — calls reloadScene() provided by App.
+const es = new EventSource(apiUrl('/events'));
 es.onmessage = debounce(async () => {
-  const bytes = await fetch('/data').then(r => r.arrayBuffer());
-  const newData = await loadFromBlob(new Blob([bytes], { type: config.contentType }), null, null);
-  excalidrawApi?.updateScene(newData);
+  const newData = await loadFromBlob(...);
+  reloadScene?.(newData);   // skips if editingElement is active; never resets viewport/theme
 }, 150);
 ```
 
-### App.tsx — Excalidraw component
+### App.tsx — save modes
 
-```tsx
-import { Excalidraw } from "@excalidraw/excalidraw";
-import "@excalidraw/excalidraw/index.css";
+**Manual save (default):** Ctrl+S / Cmd+S or "Save to file" menu item → `POST /data`.
 
-export default function App({ initialData, config }) {
-  const [api, setApi] = useState<ExcalidrawImperativeAPI>();
-  const theme = useOsTheme(config.theme); // "light" | "dark"
+**Auto-save:** when `autoSave` prop is `true` (set from `config.autoSave`), `onChange` is wired to a debounced save (600 ms). Only fires when element hash changes (not on viewport/selection events).
 
-  return (
-    <div style={{ height: "100%" }}>
-      <Excalidraw
-        excalidrawAPI={setApi}
-        initialData={{ ...initialData, scrollToContent: true }}
-        viewModeEnabled={true}
-        theme={theme}
-        name={config.name}
-        UIOptions={{
-          canvasActions: { loadScene: false, saveToActiveFile: false, export: false },
-        }}
-      />
-    </div>
-  );
-}
-```
-
-### useOsTheme.ts
-
-```ts
-export function useOsTheme(preference: "auto" | "light" | "dark"): "light" | "dark" {
-  const [theme, setTheme] = useState<"light" | "dark">(
-    preference !== "auto" ? preference :
-    window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
-  );
-  useEffect(() => {
-    if (preference !== "auto") return;
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = (e: MediaQueryListEvent) => setTheme(e.matches ? "dark" : "light");
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
-  }, [preference]);
-  return theme;
-}
-```
-
-### File Format Fallback Chain
-
-```ts
-function reorderFallbacks(primary: string): string[] {
-  const all = ["application/json", "image/svg+xml", "image/png"];
-  return [primary, ...all.filter(t => t !== primary)];
-}
-```
-
-Matches logic in `refs/excalidraw-vscode/webview/src/main.tsx`.
+**SSE reload (`reloadScene`):**
+- Passed to `main.tsx` via `onReloadReady` callback.
+- Skips update if `api.getAppState().editingElement` is non-null (user is typing).
+- Calls `api.updateScene({ elements, files })` only — never passes `appState`, so viewport position and theme are never reset.
 
 ### window.EXCALIDRAW_ASSET_PATH
 
-Must be set **before** the React bundle loads:
+Set in `index.html` before the module script loads:
 ```html
 <script>
   window.EXCALIDRAW_ASSET_PATH = "/assets/";
+  window.EXCALIDRAW_EXPORT_SOURCE = "excalidraw-zed-preview";
 </script>
-<script type="module" src="/assets/main.js"></script>
 ```
-
-`@excalidraw/excalidraw` uses this to fetch its fonts and wasm modules at runtime. All these files are served by `assets.rs` from the embedded `assets/` directory.
 
 ---
 
@@ -418,7 +356,11 @@ make release
 ### Dev workflow
 
 ```bash
-make dev DEV_FILE=docs/examples/software-development-lifecycle.excalidraw
+# Start dev server + WebView (default file or DEV_FILE env var)
+make dev DEV_FILE=docs/examples/system-architecture.excalidraw
+
+# Or open any file in the browser without restarting:
+# http://localhost:5173?file=/absolute/path/to/diagram.excalidraw
 ```
 
 Vite HMR updates the WebView on every `App.tsx` save — no Rust rebuild needed during UI development.
@@ -439,12 +381,12 @@ After UI changes are done: `make ui && make build` to bake them into the release
 
 | Phase | Deliverable | Done? |
 | ----- | ---------------------------------------- | ----- |
-| M1    | Rust binary opens wry window + serves static index.html | [ ] |
-| M2    | `webview-src/` scaffolded; Vite builds; `<Excalidraw>` renders from `/data` | [ ] |
-| M3    | File watcher + SSE + `updateScene` live reload | [ ] |
-| M4    | Zed extension spawns binary; slash command works end-to-end | [ ] |
-| M5    | Process reuse: lock file + `/focus` + `/ping` | [ ] |
-| M6    | All three file formats + fallback chain | [ ] |
+| M1    | Rust binary opens wry window + serves static index.html | ✓ |
+| M2    | `webview-src/` scaffolded; Vite builds; `<Excalidraw>` renders from `/data` | ✓ |
+| M3    | File watcher + SSE + `updateScene` live reload | ✓ |
+| M4    | Zed extension spawns binary; slash command works end-to-end | ✓ |
+| M5    | Process reuse: lock file + `/focus` + `/ping` | ✓ |
+| M6    | All three file formats + fallback chain | ✓ |
 | M7    | Cross-platform CI + prebuilt binary download | [ ] |
 
 ---

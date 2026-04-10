@@ -28,7 +28,16 @@
       "Bash(timeout 3 gsettings get org.gnome.desktop.interface color-scheme)",
       "Bash(pkill -f \"vite build\")",
       "Bash(pkill -f \"npm run build\")",
-      "Bash(kill 20710 20737 27722 27798 29836 29864)"
+      "Bash(kill 20710 20737 27722 27798 29836 29864)",
+      "Bash(cargo test:*)",
+      "Bash(ls:*)",
+      "Bash(make release:*)",
+      "Bash(rustup target:*)",
+      "Bash(make build-ext:*)",
+      "Bash(wait)",
+      "Bash(npx tsc:*)",
+      "Bash(npx vite:*)",
+      "Bash(echo \"EXIT:$?\")"
     ]
   }
 }

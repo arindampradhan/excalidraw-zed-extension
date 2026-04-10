@@ -2,14 +2,21 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::RwLock;
 use zed_extension_api::{
+    self as zed,
     http_client::{self, HttpMethod, HttpRequestBuilder},
     process::Command as ProcessCommand,
-    Command, Extension, LanguageServerId, Range, Result, SlashCommand, SlashCommandOutput,
-    SlashCommandOutputSection, Worktree,
+    Architecture, Command, Extension, LanguageServerId, Os, Range, Result, SlashCommand,
+    SlashCommandOutput, SlashCommandOutputSection, Worktree,
 };
+
+/// Must match the GitHub Release tag (v{VERSION}).
+const BINARY_VERSION: &str = "0.1.0";
+const BINARY_NAME: &str = "excalidraw-preview";
 
 struct ExcalidrawPreviewExtension {
     process_map: RwLock<HashMap<PathBuf, ProcessInfo>>,
+    /// Cached path to the downloaded binary, so we don't re-download on every call.
+    cached_binary_path: RwLock<Option<String>>,
 }
 
 struct ProcessInfo {
@@ -24,7 +31,6 @@ impl ExcalidrawPreviewExtension {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-
         name.ends_with(".excalidraw")
             || name.ends_with(".excalidraw.svg")
             || name.ends_with(".excalidraw.png")
@@ -51,37 +57,93 @@ impl ExcalidrawPreviewExtension {
     }
 
     fn find_excalidraw_file(worktree: &Worktree) -> Option<PathBuf> {
-        let root = worktree.root_path();
-        let root_path = PathBuf::from(&root);
-
-        // Try to read active file from worktree - this is a best effort approach
-        // The slash command should ideally receive the active buffer path from Zed
+        let root_path = PathBuf::from(worktree.root_path());
         if let Ok(entries) = std::fs::read_dir(&root_path) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.is_file() {
-                    if let Some(name) = path.file_name() {
-                        let name_str = name.to_string_lossy().to_string();
-                        if name_str.ends_with(".excalidraw")
-                            || name_str.ends_with(".excalidraw.svg")
-                            || name_str.ends_with(".excalidraw.png")
-                        {
-                            return Some(path);
-                        }
-                    }
+                if path.is_file() && Self::is_valid_extension(&path) {
+                    return Some(path);
                 }
             }
         }
         None
     }
 
-    fn get_active_file_path(worktree: &Worktree) -> Option<PathBuf> {
-        let root = worktree.root_path();
+    /// Returns the path to the `excalidraw-preview` binary.
+    ///
+    /// Resolution order:
+    /// 1. `PATH` — honours `make symlink` for local dev.
+    /// 2. Previously cached download from this session.
+    /// 3. Fresh download from GitHub Releases → cached for the rest of the session.
+    fn get_binary_path(&self, worktree: &Worktree) -> Result<String> {
+        // 1. Prefer whatever is on PATH (dev / make symlink workflow).
+        if let Some(path) = worktree.which(BINARY_NAME) {
+            return Ok(path);
+        }
 
-        // Try common locations where Zed might store the active buffer info
-        // For now, we rely on the fact that users will provide the file as an argument
-        // or the command is run from the context of an open .excalidraw file
-        None
+        // 2. Return cached download if the file is still there.
+        {
+            let cache = self.cached_binary_path.read().unwrap();
+            if let Some(ref path) = *cache {
+                if std::fs::metadata(path).is_ok() {
+                    return Ok(path.clone());
+                }
+            }
+        }
+
+        // 3. Download from GitHub Releases.
+        let binary_path = self.download_binary()?;
+        *self.cached_binary_path.write().unwrap() = Some(binary_path.clone());
+        Ok(binary_path)
+    }
+
+    /// Downloads the platform-specific binary from GitHub Releases and makes it executable.
+    ///
+    /// Release asset naming convention:
+    ///   `excalidraw-preview-{arch}-{os}`
+    /// e.g. `excalidraw-preview-x86_64-unknown-linux-gnu`
+    ///      `excalidraw-preview-aarch64-apple-darwin`
+    ///      `excalidraw-preview-x86_64-pc-windows-msvc.exe`
+    fn download_binary(&self) -> Result<String> {
+        let (platform, arch) = zed::current_platform();
+
+        let arch_str = match arch {
+            Architecture::Aarch64 => "aarch64",
+            Architecture::X8664 => "x86_64",
+            Architecture::X86 => "x86",
+        };
+
+        let os_str = match platform {
+            Os::Mac => "apple-darwin",
+            Os::Linux => "unknown-linux-gnu",
+            Os::Windows => "pc-windows-msvc",
+        };
+
+        let ext = match platform {
+            Os::Windows => ".exe",
+            _ => "",
+        };
+
+        let asset_name = format!("{BINARY_NAME}-{arch_str}-{os_str}{ext}");
+
+        let download_url = format!(
+            "https://github.com/arindampradhan/excalidraw-zed-extension/releases/download/v{BINARY_VERSION}/{asset_name}"
+        );
+
+        // Zed stores downloaded files under the extension's own work directory.
+        let output_path = format!("{BINARY_NAME}-{BINARY_VERSION}/{asset_name}");
+
+        zed::download_file(
+            &download_url,
+            &output_path,
+            zed::DownloadedFileType::Uncompressed,
+        )
+        .map_err(|e| format!("Failed to download {BINARY_NAME}: {e}"))?;
+
+        zed::make_file_executable(&output_path)
+            .map_err(|e| format!("Failed to make {BINARY_NAME} executable: {e}"))?;
+
+        Ok(output_path)
     }
 }
 
@@ -89,6 +151,7 @@ impl Extension for ExcalidrawPreviewExtension {
     fn new() -> Self {
         ExcalidrawPreviewExtension {
             process_map: RwLock::new(HashMap::new()),
+            cached_binary_path: RwLock::new(None),
         }
     }
 
@@ -98,9 +161,7 @@ impl Extension for ExcalidrawPreviewExtension {
         worktree: &Worktree,
     ) -> Result<Command> {
         if language_server_id.as_ref() == "excalidraw-preview" {
-            let binary = worktree.which("excalidraw-preview").ok_or(
-                "excalidraw-preview not found in PATH. Run: cargo install --path preview-binary",
-            )?;
+            let binary = self.get_binary_path(worktree)?;
             Ok(Command {
                 command: binary,
                 args: vec!["--lsp".into()],
@@ -117,12 +178,17 @@ impl Extension for ExcalidrawPreviewExtension {
         args: Vec<String>,
         worktree: Option<&Worktree>,
     ) -> Result<SlashCommandOutput> {
-        eprintln!("[DEBUG] run_slash_command called with args: {:?}", args);
         match command.name.as_str() {
             "preview-excalidraw" => {
                 let worktree = worktree.ok_or("No worktree available")?;
 
-                let file_path = if let Some(file_arg) = args.first() {
+                let binary = self.get_binary_path(worktree)?;
+
+                // Separate flags (--auto-save) from the positional file argument.
+                let auto_save = args.contains(&"--auto-save".to_string());
+                let file_arg = args.iter().find(|a| !a.starts_with("--"));
+
+                let file_path = if let Some(file_arg) = file_arg {
                     let p = PathBuf::from(file_arg);
                     if p.is_absolute() {
                         p
@@ -135,8 +201,6 @@ impl Extension for ExcalidrawPreviewExtension {
                     )?
                 };
 
-                eprintln!("[DEBUG] Using file path: {:?}", file_path);
-
                 if !Self::is_valid_extension(&file_path) {
                     return Err(
                         "File must end with .excalidraw, .excalidraw.svg, or .excalidraw.png"
@@ -145,7 +209,9 @@ impl Extension for ExcalidrawPreviewExtension {
                 }
 
                 let file_path_str = file_path.to_string_lossy().to_string();
+                let port = Self::port_for_path(&file_path);
 
+                // If a window is already open for this file, focus it and return early.
                 {
                     let map = self.process_map.read().unwrap();
                     if let Some(info) = map.get(&file_path) {
@@ -163,18 +229,17 @@ impl Extension for ExcalidrawPreviewExtension {
 
                 self.process_map.write().unwrap().remove(&file_path);
 
-                let port = Self::port_for_path(&file_path);
-
-                // zed_extension_api::process::Command only has `output()` (blocking).
-                // We background the binary via the shell so `output()` returns immediately.
+                // Background the binary via the shell so output() returns immediately.
+                let auto_save_flag = if auto_save { " --auto-save" } else { "" };
                 let shell_cmd = format!(
-                    "nohup excalidraw-preview {} --port {} >/dev/null 2>&1 &",
+                    "nohup {} {} --port {}{} >/dev/null 2>&1 &",
+                    shlex_quote(&binary),
                     shlex_quote(&file_path_str),
-                    port
+                    port,
+                    auto_save_flag,
                 );
-                let mut cmd = ProcessCommand::new("sh").arg("-c").arg(&shell_cmd);
 
-                match cmd.output() {
+                match ProcessCommand::new("sh").arg("-c").arg(&shell_cmd).output() {
                     Ok(_) => {
                         self.process_map
                             .write()
@@ -188,7 +253,7 @@ impl Extension for ExcalidrawPreviewExtension {
                             text: format!("Opened preview for {}", file_path.display()),
                         })
                     }
-                    Err(e) => Err(format!("Failed to start preview binary: {}. Make sure 'excalidraw-preview' is installed and in PATH.", e).into()),
+                    Err(e) => Err(format!("Failed to start preview: {e}").into()),
                 }
             }
             _ => Err(format!("Unknown command: {}", command.name).into()),
@@ -198,14 +263,12 @@ impl Extension for ExcalidrawPreviewExtension {
 
 zed_extension_api::register_extension!(ExcalidrawPreviewExtension);
 
-/// Quotes a path for safe shell interpolation (single-quote wrapping).
+/// Wraps a string in single quotes, escaping any existing single quotes.
 fn shlex_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
-// These test only the pure helper functions that don't touch the Zed extension
-// API — the WASM runtime is not available in unit test builds.
 
 #[cfg(test)]
 mod tests {
@@ -278,9 +341,23 @@ mod tests {
 
     #[test]
     fn test_port_for_path_differs_for_different_files() {
-        // Not strictly guaranteed for all inputs, but should hold for typical paths.
         let a = ExcalidrawPreviewExtension::port_for_path(&PathBuf::from("/tmp/a.excalidraw"));
         let b = ExcalidrawPreviewExtension::port_for_path(&PathBuf::from("/tmp/b.excalidraw"));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_shlex_quote_plain() {
+        assert_eq!(shlex_quote("/usr/bin/foo"), "'/usr/bin/foo'");
+    }
+
+    #[test]
+    fn test_shlex_quote_with_single_quote() {
+        assert_eq!(shlex_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn test_shlex_quote_with_spaces() {
+        assert_eq!(shlex_quote("/path/to my/file"), "'/path/to my/file'");
     }
 }

@@ -14,9 +14,19 @@ interface AppProps {
   theme: string;
   name: string;
   contentType: string;
+  /** When true, saves to disk after every element change (debounced 600 ms). */
+  autoSave: boolean;
   onApiReady: (api: ExcalidrawImperativeAPI) => void;
   /** Called after a successful save so the SSE listener can suppress the echo. */
   onSaved: (suppressUntil: number) => void;
+  /**
+   * Called once with a stable `reloadScene` function that the SSE handler can
+   * call when an external file change arrives.  The function skips the update
+   * when the user is actively editing a text element (prevents mid-edit
+   * disruption) and only passes elements + files to updateScene so the
+   * current viewport position and theme are never reset.
+   */
+  onReloadReady: (reload: (data: ExcalidrawInitialDataState) => void) => void;
 }
 
 function useOsTheme(preference: "auto" | "light" | "dark"): "light" | "dark" {
@@ -46,14 +56,20 @@ export default function App({
   theme,
   name,
   contentType,
+  autoSave,
   onApiReady,
   onSaved,
+  onReloadReady,
 }: AppProps) {
   const resolvedTheme = useOsTheme(theme as "auto" | "light" | "dark");
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Tracks the element hash of the last-saved state so auto-save only fires
+  // on real element changes, not on viewport pan / zoom / selection.
   const prevVersionRef = useRef<number>(-1);
 
+  // Seed prevVersionRef from the initial scene so the first onChange
+  // (which Excalidraw fires immediately on mount) doesn't trigger a spurious save.
   useEffect(() => {
     if (initialData?.elements) {
       prevVersionRef.current = hashElementsVersion(
@@ -61,6 +77,24 @@ export default function App({
       );
     }
   }, []);
+
+  // Stable reload function handed to the SSE handler in main.tsx.
+  // - Skips if the user is mid-edit (prevents text-editor disruption).
+  // - Only updates elements + files; never touches appState so the current
+  //   viewport position and theme are preserved.
+  const reloadScene = useCallback((newData: ExcalidrawInitialDataState) => {
+    const api = apiRef.current;
+    if (!api) return;
+    if (api.getAppState().editingElement) return;
+    api.updateScene({
+      elements: newData.elements,
+      files: newData.files ?? {},
+    });
+  }, []);
+
+  useEffect(() => {
+    onReloadReady(reloadScene);
+  }, [onReloadReady, reloadScene]);
 
   /** Serializes the current scene and POSTs it to /data. */
   const doSave = useCallback(async () => {
@@ -113,7 +147,7 @@ export default function App({
     }
   }, [contentType, onSaved]);
 
-  /** Ctrl+S / Cmd+S — cancel the debounce and save immediately. */
+  /** Ctrl+S / Cmd+S — always triggers an immediate save. */
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "s") {
@@ -129,17 +163,21 @@ export default function App({
     return () => window.removeEventListener("keydown", handler);
   }, [doSave]);
 
-  /** onChange — debounced auto-save triggered by element changes. */
+  /**
+   * onChange — only active when autoSave is enabled.
+   * Debounces saves so rapid edits collapse into a single write.
+   * No-ops on viewport / selection-only events (hash unchanged).
+   */
   const handleChange = useCallback(
     (elements: readonly ExcalidrawElement[]) => {
+      if (!autoSave) return;
       const currentVersion = hashElementsVersion(elements);
       if (currentVersion === prevVersionRef.current) return;
       prevVersionRef.current = currentVersion;
-
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(doSave, SAVE_DEBOUNCE_MS);
     },
-    [doSave],
+    [autoSave, doSave],
   );
 
   return (
@@ -153,18 +191,15 @@ export default function App({
         theme={resolvedTheme}
         name={name}
         onChange={handleChange}
-        UIOptions={{
-          canvasActions: {
-            loadScene: false,
-            saveToActiveFile: false,
-            export: false,
-          },
-        }}
       >
         <MainMenu>
           <MainMenu.Item onSelect={doSave} shortcut="Ctrl+S">
             Save to file
           </MainMenu.Item>
+          <MainMenu.Separator />
+          <MainMenu.DefaultItems.LoadScene />
+          <MainMenu.DefaultItems.SaveAsImage />
+          <MainMenu.DefaultItems.Export />
           <MainMenu.Separator />
           <MainMenu.DefaultItems.ClearCanvas />
           <MainMenu.DefaultItems.ChangeCanvasBackground />

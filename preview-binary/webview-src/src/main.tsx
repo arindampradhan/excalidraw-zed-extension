@@ -5,6 +5,7 @@ interface Config {
   contentType: string;
   name: string;
   theme: string;
+  autoSave: boolean;
 }
 
 function showError(message: string) {
@@ -31,9 +32,18 @@ function debounce<T extends (...args: unknown[]) => unknown>(
   };
 }
 
+// In dev mode (Vite), a ?file=/path/to/diagram.excalidraw query param can be
+// passed in the browser URL to preview any local file without restarting the
+// dev server.  In production the Rust server already knows the file, so this
+// param is never present and the plain paths are used.
+const fileParam = new URLSearchParams(window.location.search).get("file");
+function apiUrl(path: string): string {
+  return fileParam ? `${path}?file=${encodeURIComponent(fileParam)}` : path;
+}
+
 async function main() {
   try {
-    const configRes = await fetch("/config");
+    const configRes = await fetch(apiUrl("/config"));
     if (!configRes.ok)
       throw new Error(`Failed to fetch config: ${configRes.status}`);
     const config: Config = await configRes.json();
@@ -47,7 +57,7 @@ async function main() {
         : "light";
     }
 
-    const dataRes = await fetch("/data");
+    const dataRes = await fetch(apiUrl("/data"));
     if (!dataRes.ok) throw new Error(`Failed to fetch data: ${dataRes.status}`);
     const bytes = await dataRes.arrayBuffer();
 
@@ -73,9 +83,10 @@ async function main() {
     }
 
     // Shared mutable state between App callbacks and the SSE handler.
-    let excalidrawApi: ExcalidrawImperativeAPI | null = null;
     // Timestamp after which SSE reload events are no longer suppressed.
     let ignoreSseUntil = 0;
+    // Stable reload function provided by App once it mounts.
+    let reloadScene: ((data: ExcalidrawInitialDataState) => void) | null = null;
 
     const root = document.getElementById("root");
     if (!root) return;
@@ -86,22 +97,26 @@ async function main() {
         theme={config.theme}
         name={config.name}
         contentType={config.contentType}
-        onApiReady={(api) => {
-          excalidrawApi = api;
-        }}
+        autoSave={config.autoSave}
+        onApiReady={() => {}}
         onSaved={(until) => {
           ignoreSseUntil = until;
+        }}
+        onReloadReady={(fn) => {
+          reloadScene = fn;
         }}
       />,
     );
 
     // SSE live-reload: triggered by external file changes (e.g. edits in Zed).
     // Suppressed for 2 s after the WebView itself POSTs a save to avoid echo.
-    const es = new EventSource("/events");
+    // Viewport + theme preservation and mid-edit skipping are handled inside
+    // the reloadScene function provided by App.
+    const es = new EventSource(apiUrl("/events"));
     es.onmessage = debounce(async () => {
       if (Date.now() < ignoreSseUntil) return;
       try {
-        const res = await fetch("/data");
+        const res = await fetch(apiUrl("/data"));
         if (!res.ok) return;
         const newBytes = await res.arrayBuffer();
         const newData = await loadFromBlob(
@@ -109,7 +124,7 @@ async function main() {
           null,
           null,
         );
-        excalidrawApi?.updateScene(newData);
+        reloadScene?.(newData);
       } catch (e) {
         console.error("Failed to reload:", e);
       }
