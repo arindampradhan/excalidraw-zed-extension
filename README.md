@@ -33,7 +33,9 @@ In Zed: command palette → **"zed: install dev extension"** → select the `./e
 
 ## Usage
 
-<video src="docs/usage.mp4" muted autoplay loop playsinline width="800"></video>
+
+https://github.com/user-attachments/assets/38b16092-7ee7-4bde-8872-15c7a2e01320
+
 
 1. Open any `.excalidraw`, `.excalidraw.svg`, or `.excalidraw.png` file in Zed.
 2. Run `/preview-excalidraw` from the command palette.
