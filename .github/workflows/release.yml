@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    name: Release ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            target-dir: target/release
+            binary: excalidraw-preview
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            target-dir: target/release
+            binary: excalidraw-preview
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            target-dir: target/release
+            binary: excalidraw-preview
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build binary
+        run: |
+          cargo build --release --manifest-path preview-binary/Cargo.toml
+
+      - name: Upload binary
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/release/${{ matrix.binary }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
