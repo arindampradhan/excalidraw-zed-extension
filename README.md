@@ -34,7 +34,9 @@ In Zed: command palette → **"zed: install dev extension"** → select the `./e
 ## Usage
 
 
-https://github.com/user-attachments/assets/38b16092-7ee7-4bde-8872-15c7a2e01320
+
+https://github.com/user-attachments/assets/af3cd686-56b8-413c-9012-0f1c75e5f6c9
+
 
 
 1. Open any `.excalidraw`, `.excalidraw.svg`, or `.excalidraw.png` file in Zed.
